@@ -1,0 +1,762 @@
+---
+title: "Figure_4_Analysis"
+author: "Sheldon Ding"
+date: "2025-03-21"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(EnhancedVolcano)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r set color for age}
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+```
+
+
+###Figure 4
+```{r Figure 4A}
+##subset OPC and COP for further analysis
+OPC_subset <- subset(sobj, idents = c("OPC", "COP"))
+
+##run harmony to remove batch effect again on RNA assay
+OPC_harmony <- OPC_subset#create a separate object in case mess up something
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony <- OPC_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+OPC_harmony <- RunPCA(OPC_harmony, assay = "SCT", npcs = 50)
+OPC_harmony <- RunHarmony(OPC_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+#normalize and SCT transform again after harmony
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony <- OPC_harmony %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+#recluster OPC subset
+OPC_harmony <- OPC_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+
+##run harmony to remove batch effect again on ATAC assay
+DefaultAssay(OPC_harmony) <- "ATAC" 
+OPC_harmony <- RunTFIDF(OPC_harmony) 
+OPC_harmony <- FindTopFeatures(OPC_harmony, min.cutoff = 'q0') 
+OPC_harmony <- RunSVD(OPC_harmony) 
+OPC_harmony <- RunUMAP(OPC_harmony, dims = 2:50, reduction = 'lsi')
+OPC_harmony <- RunHarmony(object = OPC_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+OPC_harmony <- RunUMAP(OPC_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+##to plot OPC_harmony age on RNA DimPlot
+DimPlot(OPC_harmony, group.by = "dev.group",reduction = "umap.rna", label = F, cols = devcolor)
+
+##to determine SNN resolution and number of clusters
+clustree(OPC_harmony) #determined the SNN resolution @0.6
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony_cluster_DEG <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony_cluster_DAP <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##based on subcluster DAP, DEG and canonical marker (see Supplemental Figure 3C analysis), we determined cell type of each cluster
+#set active identity to SCT_snn_res.0.6
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$SCT_snn_res.0.6)
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "OPC"
+  cluster_1 <- "RG-like OPC"
+  cluster_2 <- "OPC"
+  cluster_3 <- "OPC"
+  cluster_4 <- "RG-like OPC"
+  cluster_5 <- "OPC"
+  cluster_6 <- "COP"
+  cluster_7 <- "RG-like OPC"
+  cluster_8 <- "COP"
+  cluster_9 <- "Astrocyte-like OPC"
+  cluster_10 <- "OPC"
+}
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10)
+names(new.cluster.ids) <- levels(OPC_harmony)
+OPC_harmony <- RenameIdents(OPC_harmony, new.cluster.ids)
+OPC_harmony$Subcluster <- OPC_harmony@active.ident
+OPC_harmony@meta.data$Subcluster <- factor(x = OPC_harmony@meta.data$Subcluster, levels = c("RG-like OPC","OPC","COP","Astrocyte-like OPC"))
+
+#assign colors to each subcluster
+OPC_subcluster_color = c("RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0")
+
+##to plot subcluster on RNA DimPlot
+DimPlot(OPC_harmony, label = F, reduction = "umap.rna", cols = OPC_subcluster_color)
+```
+
+```{r Figure 4B}
+#set sobj identity to subcluster (we already organized the subcluster info of Radial Glia, Astrocyte, OPC, and COP into the sobj)
+sobj <- SetIdent(sobj, value = sobj@meta.data$Subcluster)
+
+#subset Radial Glial and RG-like OPC
+RGL_OPC <- subset(sobj, idents = c("ROBO2 Radial Glia","SLIT2 Radial Glia","RG-like OPC"))
+
+#create a metadata of subtype in RGL_OPC to differntiate between Radial Glia and RG-like OPC
+RGL_OPC@meta.data$RGL <- ifelse(RGL_OPC@meta.data$Subtype %in% c("ROBO2 Radial Glia", "SLIT2 Radial Glia"), "Radial Glia", "RG-like")
+
+#create a metadata of ID_Cell in RGL_OPC
+RGL_OPC@meta.data$ID_Cell <- gsub(" ", "_", paste0(RGL_OPC@meta.data$sample_id, "_",RGL_OPC@meta.data$RGL))
+
+#get count data
+pb <- data.frame(gene = rownames(RGL_OPC@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(RGL_OPC@meta.data$ID_Cell)){
+     print(sample)
+  if (sum(RGL_OPC$ID_Cell == sample) > 10){
+    sub <- subset(RGL_OPC, ID_Cell == sample)
+    #include data only if there are more than 10 cells for that sample
+        #sum up the counts for each gene and save it to the pseudobulk dataframe
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the celltype
+colData$cellType <- ifelse(grepl("Radial_Glia", colData$sample), "Radial_Glia", "RG-like")
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+##perform DESeq
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+
+# run DESeq2
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#set contrast
+contrast <- c("cellType", "RG-like", "Radial_Glia")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+#set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between Radial Glial and RG-like OPC
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("BCAR3","PDGFRA","GPR17"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4C}
+#subset RG-like OPC and OPC
+RGL_OPC_<- subset(OPC_harmony, idents = c("RG-like OPC", "OPC"))
+
+#create a metadata of ID_Cell
+RGL_OPC@meta.data$ID_Cell <- gsub(" ", "_", paste0(RGL_OPC@meta.data$sample_id, "_",RGL_OPC@meta.data$Subcluster))
+
+#get count data
+pb <- data.frame(gene = rownames(RGL_OPC@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(RGL_OPC@meta.data$ID_Cell)){
+    sub <- subset(RGL_OPC, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("RG-like OPC", colData$sample), "RG-like OPC", "OPC")
+
+#set contrast
+contrast <- c("cellType", "OPC", "RG-like OPC")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between RG-like OPC and OPC
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("TOP2A","YAP1","MKI67","CHL1","GRM7"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4D}
+##to plot differentially expressed genes in OPCs across development on ViolinPlot
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$dev.group)
+VlnPlot(OPC_harmony, features = c("SEMA5A", "RBFOX1", "PLEKHH2","SEMA3E", "C1QL1", "PDGFC", "PTGDS","NR4A1"), split.by = "dev.group",cols = devcolor, stack = T, flip = T)
+```
+
+```{r Figure 4E}
+##calculate the DAP in each subcluster
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$Subcluster)
+OPC_harmony_subcluster_DAP <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each subcluster and make a list
+OPC_harmony_subcluster_DAP_list <- list(RG-like-OPC_DAP,OPC_DAP,COP_DAP,Astrocyte-like_OPC_DAP)
+
+#run the rGreat analysis
+OPC_harmony_subcluster_DAP_list <- lapply(OPC_harmony_subcluster_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OPC_harmony_subcluster_DAP_list <- lapply(OPC_harmony_subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.OPC_harmony_subcluster_DAP_list[[1]], g.OPC_harmony_subcluster_DAP_list[[2]], g.OPC_harmony_subcluster_DAP_list[[3]], g.OPC_harmony_subcluster_DAP_list[[4]])
+
+#visualize the unique DAP in each subcluster using VennDiagram
+makeVennDiagram(laps_Full, NameOfPeaks = c("RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0"))
+
+#create a list of subclusters for barplot
+subcluster <- c("RG-like OPC","OPC","COP","Astrocyte-like OPC")
+
+#get the number of unique peaks across subcluster from OPC_harmony_cluster_DAP
+OPC_subcluster_unique_DAP <- c(9197, 5, 457, 300)
+
+#create a dataframe
+OPC_subcluster_unique_DAP_df <- data.frame(subcluster, OPC_subcluster_unique_DAP,stringsAsFactors = FALSE)
+OPC_subcluster_unique_DAP_df$subcluster <- factor(x = OPC_subcluster_unique_DAP_df$subcluster, levels = c("RG-like OPC","OPC","COP","Astrocyte-like OPC"))
+
+##to plot unique DAP across subclusters on BarPlot
+ggplot() +
+  geom_bar(data = OPC_subcluster_unique_DAP_df, aes(x = subcluster, y = OPC_subcluster_unique_DAP, fill = subcluster), stat = "identity") + scale_fill_manual(values = OPC_subcluster_color) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 4F}
+##calculate the DAP in each age group
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$dev.group)
+OPC_harmony_age_DAP <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each subcluster and make a list
+OPC_harmony_age_DAP <- list(Fetal_DAP, Infant_DAP, Child_DAP, Adolescent_DAP, Adult_DAP)
+
+#run the rGreat analysis
+OPC_harmony_age_DAP <- lapply(OPC_harmony_age_DAP, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OPC_harmony_age_DAP <- lapply(OPC_harmony_age_DAP, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.OPC_harmony_age_DAP[[1]], g.OPC_harmony_age_DAP[[2]], g.OPC_harmony_age_DAP[[3]], g.OPC_harmony_age_DAP[[4]], g.OPC_harmony_age_DAP[[5]])
+
+#visualize the unique DAP in each subcluster using VennDiagram
+makeVennDiagram(laps_Full, NameOfPeaks = c("Fetal", "Infant", "Child", "Adolescent", "Adult"), fill=c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921"))
+
+#create a list of age groups for barplot
+age <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+#get the number of unique peaks across age from laps_Full
+OPC_age_unique_DAP <- c(12038, 0, 0, 0, 0)
+
+#create a dataframe
+OPC_age_unique_DAP_df <- data.frame(age, OPC_age_unique_DAP_df,stringsAsFactors = FALSE)
+OPC_age_unique_DAP_df$age <- factor(x = OPC_age_unique_DAP_df$age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+
+##to plot unique DAP across age groups on BarPlot
+ggplot() +
+  geom_bar(data = OPC_age_unique_DAP_df, aes(x = age, y = OPC_age_unique_DAP_df, fill = age), stat = "identity") + scale_fill_manual(values = devcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 4G}
+##subset OL and Early OL for further analysis
+OL_subset <- subset(sobj, idents = c("OL", "Early OL"))
+
+##run harmony to remove batch effect again on RNA assay
+OL_harmony <- OL_subset#create a separate object in case mess up something
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony <- OL_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+OL_harmony <- RunPCA(OL_harmony, assay = "SCT", npcs = 50)
+OL_harmony <- RunHarmony(OL_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+#normalize and SCT transform again after harmony
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony <- OL_harmony %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+#recluster OL subset
+OL_harmony <- OL_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+
+##run harmony to remove batch effect again on ATAC assay
+DefaultAssay(OL_harmony) <- "ATAC" 
+OL_harmony <- RunTFIDF(OL_harmony) 
+OL_harmony <- FindTopFeatures(OL_harmony, min.cutoff = 'q0') 
+OL_harmony <- RunSVD(OL_harmony) 
+OL_harmony <- RunUMAP(OL_harmony, dims = 2:50, reduction = 'lsi')
+OL_harmony <- RunHarmony(object = OL_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+OL_harmony <- RunUMAP(OL_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+##to plot OL_harmony age on RNA DimPlot
+DimPlot(OL_harmony, group.by = "dev.group",reduction = "umap.rna", label = F, cols = devcolor)
+
+##to determine SNN resolution and number of clusters
+clustree(OL_harmony) #determined the SNN resolution @0.6
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony_cluster_DEG <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(OL_harmony) <- "ATAC"
+OL_harmony_cluster_DAP <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##based on subcluster DAP, DEG and canonical marker (see Supplemental Figure 4B analysis), we determined cell type of each cluster
+#set active identity to SCT_snn_res.0.6
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$SCT_snn_res.0.6)
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "RBFOX1 OL"
+  cluster_1 <- "RBFOX1 OL"
+  cluster_2 <- "RBFOX1 OL"
+  cluster_3 <- "Early OL"
+  cluster_4 <- "RBFOX1 OL"
+  cluster_5 <- "RBFOX1 OL"
+  cluster_6 <- "OPALIN OL"
+  cluster_7 <- "RBFOX1 OL"
+  cluster_8 <- "OPALIN OL"
+  cluster_9 <- "Early OL"
+  cluster_10 <- "OPALIN OL"
+  cluster_11 <- "RBFOX1 OL"
+  cluster_12 <- "OPALIN OL"
+}
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10, cluster_11, cluster_12)
+names(new.cluster.ids) <- levels(OL_harmony)
+OL_harmony <- RenameIdents(OL_harmony, new.cluster.ids)
+OL_harmony$Subcluster <- OL_harmony@active.ident
+OL_harmony@meta.data$Subcluster <- factor(x = OL_harmony@meta.data$Subcluster, levels = c("Early OL","RBFOX1 OL","OPALIN OL"))
+
+#assign colors to each subcluster
+OL_subcluster_color = c("Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB")
+
+##to plot subcluster on RNA DimPlot
+DimPlot(OL_harmony, label = F, reduction = "umap.rna", cols = OL_subcluster_color)
+```
+
+```{r Figure 4H}
+#create a metadata of ID_Cell
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony@meta.data$ID_Cell <- gsub(" ", "_", paste0(OL_harmony@meta.data$sample_id, "_",
+                                OL_harmony@meta.data$Cell_Type_General))
+
+#get count data
+pb <- data.frame(gene = rownames(OL_harmony@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(OL_harmony@meta.data$ID_Cell)){
+    sub <- subset(OL_harmony, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("Early_OL", colData$sample), "Early_OL", "OL")
+
+#set contrast
+contrast <- c("cellType", "OL", "Early_OL")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between OL and Early OL
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("UGGT2","PFKP","PALD1","DAPK1"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4I}
+#set active identity to subcluster
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$subcluster)
+
+#make a subset of RBFOX1 OL and OPALIN OL
+subset <- subset(OL_harmony, idents = c("RBFOX1 OL", "OPALIN OL"))
+
+#create a metadata of ID_Cell
+subset@meta.data$ID_Cell <- gsub(" ", "_", paste0(subset@meta.data$sample_id, "_",
+                                subset@meta.data$subcluster))
+
+#get count data
+pb <- data.frame(gene = rownames(subset@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(subset@meta.data$ID_Cell)){
+    sub <- subset(subset, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("OPALIN OL", colData$sample), "OPALIN OL", "RBFOX1 OL")
+
+#set contrast
+contrast <- c("cellType", "RBFOX1 OL", "OPALIN OL")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between OL and Early OL
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("UGGT2","PFKP","PALD1","DAPK1"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4J}
+##to plot differentially expressed genes in Oligodendrocyte across development on ViolinPlot
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$dev.group)
+VlnPlot(OL_harmony, features = c("DISC1", "OPALIN", "GRIK2","SEMA5A", "NLGN1", "RBFOX1", "PTGDS"), split.by = "dev.group",cols = devcolor, stack = T, flip = T)
+```
+
+```{r Figure 4K}
+##calculate the DAP in each subcluster
+DefaultAssay(OL_harmony) <- "ATAC"
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$Subcluster)
+OL_harmony_subcluster_DAP <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each subcluster and make a list
+OL_harmony_subcluster_DAP_list <- list(Early_OL_DAP,RBFOX1_OL_DAP,OPALIN_OL_DAP)
+
+#run the rGreat analysis
+OL_harmony_subcluster_DAP_list <- lapply(OL_harmony_subcluster_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OL_harmony_subcluster_DAP_list <- lapply(OL_harmony_subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.OL_harmony_subcluster_DAP_list[[1]], g.OL_harmony_subcluster_DAP_list[[2]], g.OL_harmony_subcluster_DAP_list[[3]])
+
+#visualize the unique DAP in each subcluster using VennDiagram
+makeVennDiagram(laps_Full, NameOfPeaks = c("Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB"))
+
+#create a list of subclusters for barplot
+subcluster <- c("Early OL", "RBFOX1 OL", "OPALIN OL")
+
+#get the number of unique peaks across subcluster from laps_Full
+OL_subcluster_unique_DAP <- c(3,66,3)
+
+#create a dataframe
+OL_subcluster_unique_DAP_df <- data.frame(subcluster, OL_subcluster_unique_DAP,stringsAsFactors = FALSE)
+OL_subcluster_unique_DAP_df$subcluster <- factor(x = OL_subcluster_unique_DAP_df$subcluster, levels = c("Early OL", "RBFOX1 OL", "OPALIN OL"))
+
+##to plot unique DAP across subclusters on BarPlot
+ggplot() +
+  geom_bar(data = OL_subcluster_unique_DAP_df, aes(x = subcluster, y = OL_subcluster_unique_DAP, fill = subcluster), stat = "identity") + scale_fill_manual(values = OL_subcluster_color) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 4L}
+##calculate the DAP in each age group
+DefaultAssay(OL_harmony) <- "ATAC"
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$dev.group)
+OL_harmony_age_DAP <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each age and make a list
+OL_harmony_age_DAP <- list(Fetal_DAP, Infant_DAP, Child_DAP, Adolescent_DAP, Adult_DAP)
+
+#run the rGreat analysis
+OL_harmony_age_DAP <- lapply(OL_harmony_age_DAP, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OL_harmony_age_DAP <- lapply(OL_harmony_age_DAP, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each age
+laps_Full <- findOverlapsOfPeaks(g.OL_harmony_age_DAP[[1]], g.OL_harmony_age_DAP[[2]], g.OL_harmony_age_DAP[[3]], g.OL_harmony_age_DAP[[4]], g.OL_harmony_age_DAP[[5]])
+
+#visualize the unique DAP in each subcluster using VennDiagram
+makeVennDiagram(laps_Full, NameOfPeaks = c("Fetal", "Infant", "Child", "Adolescent", "Adult"), fill=c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921"))
+
+#create a list of age groups for barplot
+age <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+#get the number of unique peaks across age from laps_Full
+OL_age_unique_DAP <- c(8, 4, 17, 221, 1234)
+
+#create a dataframe
+OL_age_unique_DAP_df <- data.frame(age, OL_age_unique_DAP_df,stringsAsFactors = FALSE)
+OL_age_unique_DAP_df$age <- factor(x = OL_age_unique_DAP_df$age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+
+##to plot unique DAP across age groups on BarPlot
+ggplot() +
+  geom_bar(data = OL_age_unique_DAP_df, aes(x = age, y = OL_age_unique_DAP_df, fill = age), stat = "identity") + scale_fill_manual(values = devcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+
+
+
+
+
+
+

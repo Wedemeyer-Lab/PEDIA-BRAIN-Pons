@@ -1,0 +1,219 @@
+---
+title: "Figure_1_Analysis"
+author: "Sheldon Ding"
+date: "2025-03-20"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(SeuratWrappers)
+library(monocle3)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+
+###Figure 1
+```{r Figure 1A}
+##the schematic of experimental design was made on BioRender
+
+##to determine SNN resolution and number of clusters
+clustree(sobj) #determined the SNN resolution @0.8 and 35 clusters in total (SCT assay)
+
+#to SET SNN resolution as active identity for further analysis
+sobj <- SetIdent(sobj, value = sobj@meta.data$SCT_snn_res.0.8)
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(sobj) <- "RNA"
+sobj_cluster_DEG <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(sobj) <- "ATAC"
+sobj_cluster_DAP <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to make the RNA and ATAC DimPlot @ 0.8 resolution
+sobj <- SetIdent(sobj, value = sobj@meta.data$SCT_snn_res.0.8)
+DimPlot(sobj, reduction = "umap.rna") #RNA
+DimPlot(sobj, reduction = "umap.atac") #ATAC
+
+##based on DAP, DEG and canonical marker(see Supplemental Figure 1A analysis), we determined cell type of each cluster
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "OL"
+  cluster_1 <- "OL"
+  cluster_2 <- "OL"
+  cluster_3 <- "OL"
+  cluster_4 <- "Radial Glia"
+  cluster_5 <- "Astrocyte"
+  cluster_6 <- "PAX3 Neuron"
+  cluster_7 <- "Immune"
+  cluster_8 <- "HOXB3 Neuroblast"
+  cluster_9 <- "Transit Amplifying Cell"
+  cluster_10 <- "Motor Neuron"
+  cluster_11 <- "Early OL"
+  cluster_12 <- "OPC"
+  cluster_13 <- "Radial Glia"
+  cluster_14 <- "PAX3 Neuroblast"
+  cluster_15 <- "OPC"
+  cluster_16 <- "Endothelial"
+  cluster_17 <- "Immune"
+  cluster_18 <- "HOXB3 Neuroblast"
+  cluster_19 <- "Mesenchymal"
+  cluster_20 <- "Pericyte"
+  cluster_21 <- "Immune"
+  cluster_22 <- "COP"
+  cluster_23 <- "Ependymal"
+  cluster_24 <- "Astrocyte"
+  cluster_25 <- "Fetal COP"
+  cluster_26 <- "Ependymal"
+  cluster_27 <- "OL"
+  cluster_28 <- "Erythroblast"
+  cluster_29 <- "Immune"
+  cluster_30 <- "Early OL"
+  cluster_31 <- "COP"
+  cluster_32 <- "Early OL"
+  cluster_33 <- "Immune"
+  cluster_34 <- "Astrocyte"
+}
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10, cluster_11, cluster_12, cluster_13, cluster_14, cluster_15, cluster_16, cluster_17, cluster_18, cluster_19, cluster_20, cluster_21, cluster_22, cluster_23, cluster_24, cluster_25, cluster_26, cluster_27, cluster_28, cluster_29,cluster_30, cluster_31, cluster_32, cluster_33, cluster_34)
+
+names(new.cluster.ids) <- levels(sobj)
+sobj <- RenameIdents(sobj, new.cluster.ids)
+sobj@active.ident <- factor(x = sobj@active.ident, levels = c("ROBO2 Ependymal","SLIT2 Ependymal", "Radial Glia", "Transit Amplifying Cell", "PAX3 Neuroblast", "PAX3 Neuron", "HOXB3 Neuroblast", "Motor Neuron","Astrocyte","OPC", "Fetal COP","COP", "Early OL", "OL","Mesenchymal", "Immune", "Endothelial",  "Erythroblast", "Pericyte"))
+
+#add metadata of Cell Type called "Cell_Type_General"
+sobj$Cell_Type_General <- sobj@active.ident
+
+#assign colors to different cell types
+cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Motor Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+
+##to plot cell type on RNA DimPlot
+DimPlot(sobj, reduction = "umap.rna", label = T, cols = cellcolor)
+```
+
+```{r Figure 1B}
+##we customed cell cycle genes (for justification please see the main article)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+g2m.genes <- subset(g2m.genes, !(g2m.genes %in% c('ANLN','PSRC1','CKAP5', 'TUBB4B')))
+
+##to perform cell cycle/phase calculation
+DefaultAssay(sobj) <- "RNA"
+sobj <- NormalizeData(sobj)
+sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+
+#assign colors to different cell cycle/phase
+phasecolor <- c("G1" = "#E69F00", "S" = "#56B4E9", "G2M" = "#009E73", "Undecided" = "#F0E442")
+
+##to plot cell cycle/phase on RNA DimPlot
+DimPlot(sobj, label = F, cols = phasecolor, group.by = "Phase")
+```
+
+```{r Figure 1C}
+##we performed pseudotime analysis using Monocle 3 package
+##please see Monocle 3 website for official tutorial for your own resaerch needs
+
+#transform the seurat object into a cds object for monocle to work
+cds <- as.cell_data_set(sobj)
+colData(cds)
+fData(cds)
+rownames(fData(cds))[1:10]
+fData(cds)$gene_short_name<-rownames(fData(cds))
+counts(cds)
+
+#create the umap partition and cell embeddings including seurat metadata on cds object
+reacreate.partition<-c(rep(1,length(cds@colData@rownames)))
+reacreate.partition
+names(reacreate.partition)<-cds@colData@rownames
+reacreate.partition<-as.factor(reacreate.partition)
+reacreate.partition
+cds@clusters$UMAP$partitions<-reacreate.partition
+list_cluster<-sobj@active.ident
+cds@clusters$UMAP$clusters<-list_cluster
+cds@int_colData@listData$reducedDims$UMAP<-sobj@reductions$umap.rna@cell.embeddings
+
+#"learn graph" in order to calculate cell trajectory and pseudotime
+cds<-learn_graph(cds,use_partition = TRUE)
+
+#view the cell trajectory in different cell types
+Cell_trajectory <- plot_cells(cds,
+           color_cells_by='cluster',
+           label_groups_by_cluster=FALSE,
+           label_branch_points = FALSE,
+           label_roots = FALSE,
+           label_leaves = FALSE,
+           group_label_size = 3)+ scale_colour_manual(
+  values = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Motor Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E"))
+
+#order cells for pseudotime analysis
+cds <- order_cells(cds)
+
+##to plot pseudotime on RNA DimPlot
+Cell_pseudotime <- plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "ident",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60")
+```
+
+```{r Figure 1D}
+##create a metadata of "postnatal" to differetiate "Fetal" and "Postnatal"
+sobj@meta.data$postnatal <- ifelse(sobj@meta.data$orig.ident %in% c("fetal_multiome"), "Fetal", "Postnatal") %>% factor()
+
+#set active identity to "postnatal"
+sobj <- SetIdent(sobj, value = sobj@meta.data$postnatal)
+
+##calculate the DEG between "Fetal" and "Postnatal"
+DefaultAssay(sobj) <- "RNA"
+sobj_Fetal_Postnatal_DEG <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##calculate the DAP between "Fetal" and "Postnatal"
+DefaultAssay(sobj) <- "ATAC"
+sobj_Fetal_Postnatal_DAP <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#set active identity to "Cell_Type_General"
+sobj <- SetIdent(sobj, value = sobj@meta.data$Cell_Type_General)
+
+##to plot cell type composition difference between "Fetal" and "Postnatal" on RNA and ATAC DimPlot
+DimPlot(sobj, reduction = "umap.rna", split.by = "postnatal",label = F, cols = cellcolor)#RNA
+
+DimPlot(sobj, reduction = "umap.atac", split.by = "postnatal",label = F, cols = cellcolor)#ATAC
+```
+
+```{r Figure 1E}
+##extract metadata of "Cell_Type_General" and "dev.group" for ggplot visualization
+sobj@meta.data %>% group_by(Cell_Type_General, dev.group) %>% summarise(n = n()) %>% group_by(dev.group) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
+
+##to plot cell type composition difference between "Fetal" and "Postnatal" on BarPlot
+ggplot(df1, aes(x = dev.group, y = freq, fill = Cell_Type_General)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("dev.group") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+  theme_classic() + NoLegend()
+```
+

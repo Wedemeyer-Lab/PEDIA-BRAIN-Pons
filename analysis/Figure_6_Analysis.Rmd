@@ -1,0 +1,2793 @@
+---
+title: "CellChat"
+author: "Gary Schweickart"
+date: "2024-07-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Generate cellchat objects for each dura sample
+library(dplyr)
+library(CellChat)
+library(ggplot2)                  
+library(patchwork)
+library(igraph)
+library(Seurat)
+library(ComplexHeatmap)
+library(circlize)
+library(ggrepel)
+library(ggwordcloud)
+library(magrittr)
+library(purrr)
+library(qvalue)
+library(matlab)
+library(gridExtra)
+options(stringsAsFactors = FALSE)
+set.seed(6)
+```
+
+
+```{r initialize colors for plots}
+cellcolor = c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Glut Neuron" = "#228c68","Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early Oligo" = "#3998f5","Oligo" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+subtypecolor <- c("Ependymal" = "#000000","Fetal Ependymal" = "#36454F", "Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00", "PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Glut Neuron" = "#228c68", "Neuron" = "#006400","SEMA3E Astrocyte" = "#FFDAB9","ROBO2 Astrocyte" = "#FF4F00","Oligo-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#BDC3C7","Fetal COP" = "#00FFFF","RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0", "Early Oligo" = "#3998f5","RBFOX1 Oligo" = "#8A2BE2","OPALIN Oligo" = "#1A3EAB","Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+Development = c("Fetal" =  "#fafa6e", "Infant" = "#c5ec71", "Child" ="#94dc79",
+                "Adolescent" = "#68c981","Adult" = "#42b588")
+birth = c("Fetal" =  "#fafa6e", "Postnatal" = "#42b588")
+
+```
+
+```{r split atlas into samples}
+# Set receptor-ligand database
+CellChatDB <- CellChatDB.human
+showDatabaseCategory(CellChatDB)
+dplyr::glimpse(CellChatDB$interaction)
+# use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# load atlas
+sobj.harmony <- readRDS("output/objects/atlas_final.RDS")
+
+# create a list of CellChatObjects
+DefaultAssay(sobj.harmony) <- "RNA"
+sobj.harmony@assays$ATAC <- NULL
+samples <- unique(sobj.harmony$sample_id)
+
+sobj.list <- SplitObject(sobj.harmony, split.by = "sample_id")
+# remove low count fetal cells from postnatal samples
+sobj.list2 <- lapply(sobj.list, function(sobj) {
+  if (sobj@meta.data$dev.group[1] != "Fetal") {
+    sobj <- sobj[,!(sobj$Cell_Type %in% c("Ependymal", "Early PAX3+ Neuroblast", "Late PAX3+ Neuroblast",
+                                          "HOXB3+ Neuroblast", "Early Fetal COP", "Endothelial","Erythroblast", "Pericyte"))]
+  }
+  return(sobj)
+})
+
+metadata <- sobj.harmony@meta.data
+write.csv(metadata, "output/objects/CellChat/metadata.csv")
+
+sobj.list <- sobj.list2
+rm(sobj.list2)
+```
+
+```{r generate cellchat objects}
+# # Generate cellchat for celltypes
+library(future)
+chat.list <- lapply(samples, function(sample) {
+  print(paste0("starting sample: ",sample))
+  sobj.list[[sample]]@meta.data$samples <- sobj.list[[sample]]$sample_id
+  chat <- createCellChat(normalizeData(GetAssayData(sobj.list[[sample]])),
+                         meta = sobj.list[[sample]]@meta.data,
+                         group.by = "Cell_Type", datatype = "RNA")
+  chat@DB <- CellChatDB.use
+  chat <- subsetData(chat) # This step is necessary even if using the whole database
+  chat <- identifyOverExpressedGenes(chat)
+  chat <- identifyOverExpressedInteractions(chat)
+  # drop celltypes that are not found in this subset
+  chat@meta$celltype = droplevels(chat@meta$Cell_Type, exclude = setdiff(levels(chat@meta$Cell_Type),unique(chat@meta$Cell_Type)))
+  chat@idents <- droplevels(chat@idents, exclude = setdiff(levels(chat@idents),unique(chat@idents)))
+  # Compute communication probability
+  chat <- computeCommunProb(chat)
+  # Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+  chat <- filterCommunication(chat, min.cells = 10)
+  # Infer the cell-cell communication at a signaling pathway level
+  chat <- computeCommunProbPathway(chat)
+  # Calculate the aggregated cell-cell communication network
+  chat <- aggregateNet(chat)
+  # Compute Centrality
+  chat <- netAnalysis_computeCentrality(chat,  slot.name = "netP")
+  # Project onto protein-protein interaction network
+  chat <- projectData(chat, PPI.human)
+  return(chat)
+})
+
+saveRDS(chat.list, "output/objects/CellChat/sobj.chatlist.RDS")
+
+
+#chat.list <- readRDS("output/objects/CellChat/sobj.chatlist.RDS")
+# Ensure that the same number of celltypes are included in the @net, @netP, @idents
+# Identify all celltypes
+idents.list <- lapply(chat.list, function(chat) levels(chat@idents))
+allCelltypes <- unique(unlist(idents.list))
+# lift the chats over to the full list
+levels.celltype <- levels(sobj.harmony$Cell_Type)
+chat.list <- lapply(chat.list, function(chat) liftCellChat(chat,levels.celltype))
+
+names(chat.list) <- samples
+```
+
+```{r lift cellchat}
+sampleMetadata <- unique(metadata[,c("sample_id","dev.group", "orig.ident")])
+rownames(sampleMetadata) <- sampleMetadata$sample_id
+samples <- rownames(sampleMetadata)
+# Ensure that the same number of celltypes are included in the @net, @netP, @idents
+# Identify all celltypes
+idents.list <- lapply(chat.list, function(chat) levels(chat@idents))
+allCelltypes <- unique(unlist(idents.list))
+# lift the chats over to the full list
+levels.celltype <- names(cellcolor)
+chat.list <- lapply(chat.list, function(chat) liftCellChat(chat,levels.celltype))
+
+names(chat.list) <- samples
+```
+
+```{r extract centrality function}
+# Function to extract the Net Centrality scores for all the celltypes in each sample
+extractNetCentrality <- function(object, slot.name = "netP", signaling = NULL, 
+                                 color.use = NULL, cell.order = NULL,
+                                 x.measure = "outdeg", y.measure = "indeg") 
+{
+  if (length(slot(object, slot.name)$centr) == 0) {
+    stop("Please run `netAnalysis_computeCentrality` to compute the network centrality scores! ")
+  }
+  if (sum(c(x.measure, y.measure) %in% names(slot(object, 
+                                                  slot.name)$centr[[1]])) != 2) {
+    stop(paste0("`x.measure, y.measure` should be one of ", 
+                paste(names(slot(object, slot.name)$centr[[1]]), 
+                      collapse = ", "), "\n", "`outdeg_unweighted` is only supported for version >= 1.1.2"))
+  }
+  centr <- slot(object, slot.name)$centr
+  outgoing <- matrix(0, nrow = nlevels(object@idents), ncol = length(centr))
+  incoming <- matrix(0, nrow = nlevels(object@idents), ncol = length(centr))
+  dimnames(outgoing) <- list(levels(object@idents), names(centr))
+  dimnames(incoming) <- dimnames(outgoing)
+  for (i in 1:length(centr)) {
+    outgoing[, i] <- centr[[i]][[x.measure]]
+    incoming[, i] <- centr[[i]][[y.measure]]
+  }
+  if (is.null(signaling)) {
+    message("Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways")
+  }
+  else {
+    message("Signaling role analysis on the cell-cell communication network from user's input")
+    signaling <- signaling[signaling %in% object@netP$pathways]
+    if (length(signaling) == 0) {
+      stop("There is no significant communication for the input signaling. All the significant signaling are shown in `object@netP$pathways`")
+    }
+    outgoing <- outgoing[, signaling, drop = FALSE]
+    incoming <- incoming[, signaling, drop = FALSE]
+  }
+  outgoing.cells <- rowSums(outgoing)
+  incoming.cells <- rowSums(incoming)
+  num.link <- aggregateNet(object, signaling = signaling, 
+                           return.object = FALSE, remove.isolate = FALSE)$count
+  num.link <- rowSums(num.link) + colSums(num.link) - diag(num.link)
+  df <- data.frame(x = outgoing.cells, 
+                   y = incoming.cells, 
+                   labels = names(incoming.cells), 
+                   Count = num.link)
+  df$labels <- factor(df$labels, levels = names(incoming.cells))
+  return(as_tibble(df))
+} # End extractNetCentrality
+```
+
+
+
+
+```{r extract centrality}
+# Generate tibble of net centrality values for each celltype 
+rownames(sampleMetadata) <- sampleMetadata$sample_id
+subtypecolor <- subtypecolor[levels.celltype]
+# Initialize
+netCentrality.df <- cbind(sample = names(chat.list[1]),
+                          tissue = rep(sampleMetadata[1,"orig.ident"], times = length(levels(chat.list[[1]]@idents))),
+                          grade = rep(sampleMetadata[1,"dev.group"], times = length(levels(chat.list[[1]]@idents))),
+                          extractNetCentrality(chat.list[[1]]))
+
+
+for (i in 2:length(chat.list)) {
+  df <- cbind(sample = names(chat.list[i]),
+              tissue = rep(sampleMetadata[i,"orig.ident"], times = length(levels(chat.list[[i]]@idents))),
+              grade = rep(sampleMetadata[i,"dev.group"], times = length(levels(chat.list[[i]]@idents))),
+              extractNetCentrality(chat.list[[i]]))
+  netCentrality.df <- rbind(netCentrality.df, df)
+}
+colnames(netCentrality.df) <- c("sample","project","dev.group","Outgoing","Incoming","celltype","count")
+levels(netCentrality.df$celltype)
+
+# Generate plot of net centrality scores
+# Net centrality analysis all samples
+# FUNCION plotNetCentralityMatScatter()
+plotNetCentralityMatScatter <- function (mat, shape=NULL, cols) {
+  ggplot(netCentrality.df[include,], aes(x=Outgoing, y=Incoming, shape=dev.group, color=celltype, size=count)) + #label=celltype, 
+    geom_point() +
+    scale_color_manual(values = cols) +
+    labs(x="log10(Outgoing Net Centrality Score)",y="log10(Incoming Net Centrality Score)",title = "Net Centrality of Celltypes") +
+    scale_x_log10() + scale_y_log10() + theme_classic() #+
+  #geom_text(hjust=0, vjust=0) +
+  #geom_text_repel() 
+}
+
+# Plot all samples and grades
+include <- which(netCentrality.df$Outgoing>0.5 &
+                   #netCentrality.df$grade %in% c("dura","I","II") &
+                   netCentrality.df$Incoming>0.5 &
+                   netCentrality.df$count>0)
+length(include)
+mat <- netCentrality.df[include,]
+plotNetCentralityMatScatter(mat,shape=dev.group,cols=cellcolor)
+ggsave("output/figures/CellChat/netCentrality/all.pdf", height= 10, width = 15, units = "in")
+```
+
+```{r  Plot  fetal}
+# Plot  fetal
+include <- which(netCentrality.df$Outgoing>0.005 
+                 & netCentrality.df$Incoming>0.005 
+                 & netCentrality.df$count>0
+                 & netCentrality.df$dev.group == "Fetal")
+length(include)
+mat <- netCentrality.df[include,]
+plotNetCentralityMatScatter(mat,shape=celltype, cols = subtypecolor)
+ggsave("output/figures/CellChat/netCentrality/fetal.pdf", height= 10, width = 15, units = "in")
+```
+
+```{r plot infant}
+# Plot  0-2
+include <- which(netCentrality.df$Outgoing>0.005 
+                 & netCentrality.df$Incoming>0.005 
+                 & netCentrality.df$count>0
+                 & netCentrality.df$dev.group == "Infant")
+length(include)
+mat <- netCentrality.df[include,]
+plotNetCentralityMatScatter(mat,shape=age.group, cols = subtypecolor)
+ggsave("output/figures/CellChat/netCentrality/infant.pdf", height= 10, width = 15, units = "in")
+```
+
+```{r plot child}
+# Plot  4-8
+include <- which(netCentrality.df$Outgoing>0.005 
+                 & netCentrality.df$Incoming>0.005 
+                 & netCentrality.df$count>0
+                 & netCentrality.df$dev.group %in% "Child")
+length(include)
+mat <- netCentrality.df[include,]
+plotNetCentralityMatScatter(mat,shape=celltype, cols = subtypecolor)
+ggsave("output/figures/CellChat/netCentrality/child.pdf", height= 10, width = 15, units = "in")
+```
+
+```{r plot adolescent}
+# Plot  13-14
+include <- which(netCentrality.df$Outgoing>0.005 
+                 & netCentrality.df$Incoming>0.005 
+                 & netCentrality.df$count>0
+                 & netCentrality.df$dev.group %in% "Adolescent")
+length(include)
+mat <- netCentrality.df[include,]
+plotNetCentralityMatScatter(mat,shape=celltype, cols = subtypecolor)
+ggsave("/igm/projects/HD-BAT_Wedemeyer/atlas/pons/figures/plots/CellChat//plots/atlas/netCentrality/adolescent.pdf", height= 10, width = 15, units = "in")
+```
+
+```{r plot adult}
+# Plot  adult
+include <- which(netCentrality.df$Outgoing>0.005 
+                 & netCentrality.df$Incoming>0.005 
+                 & netCentrality.df$count>0
+                 & netCentrality.df$dev.group %in% "Adult")
+length(include)
+mat <- netCentrality.df[include,]
+plotNetCentralityMatScatter(mat,shape=celltype, cols = subtypecolor)
+ggsave("output/figures/CellChat/netCentrality/adult.pdf", height= 10, width = 15, units = "in")
+```
+
+```{r extract net communication probability function}
+# Calculate the net signaling between each celltype in each sample
+# Function to extract the net communication probability
+# FUNCTION extractNetCommunProb()
+extractNetCommunProb <- function (object, thresh = 0.05) 
+{ 
+  netP <- object@netP
+  prob <- object@netP$prob # an array of 1) senders, 2) receivers, 3) pathways
+  pathways <- dimnames(prob)[[3]]
+  netPathwayProbs <- lapply(pathways, function(pathway) sum(rowSums(prob[,,pathway])))
+  names(netPathwayProbs) <- object@netP$pathways
+  return(netPathwayProbs)
+}
+# END extractNetCommunProb()
+netSigPathwayProbs.list <- lapply(chat.list, function(sample) {
+  x <- extractNetCommunProb(sample) %>% unlist
+  df <- data.frame(pathway=names(x),
+                   prob=x,
+                   log10prob=log10(x))
+  return(df)
+})
+names(netSigPathwayProbs.list) <- rownames(sampleMetadata)
+```
+
+
+```{r get top pathways}
+# Top pathways in the entire dataset
+pathways <- lapply(chat.list, function(chat) {chat@netP$pathways}) %>% unlist %>% unique
+
+# Initialize communication probability matrix for all pathways with a communication probability pval<0.05 for at least one sample
+sigPathwayProbs <- cbind(sampleMetadata,matrix(0,nrow=length(chat.list),ncol=(length(pathways))))
+colnames(sigPathwayProbs) <- c("sample_id","project","dev.group",pathways)
+
+for (i in 1:length(netSigPathwayProbs.list)) {
+  sigPathwayProbs[names(netSigPathwayProbs.list[i]),rownames(netSigPathwayProbs.list[[i]])] <- netSigPathwayProbs.list[[i]]$prob
+}
+
+
+
+# Remove "-" from pathways names to facilitate extraction of anova p-values
+pathwaysShort <- sapply(pathways,function(pathway) {gsub("-","",pathway)})
+colnames(sigPathwayProbs) <-c("sample_id","project","dev.group",pathwaysShort)
+```
+
+```{r rank pathways}
+# temporarily change names that start with numeric (as.formula function thinks it's a coefficient)
+pathwaysShort[pathwaysShort == "2AG"] <- "temp2AG"
+pathwaysShort[pathwaysShort == "5alphaP"] <- "temp5alphaP"
+colnames(sigPathwayProbs)[colnames(sigPathwayProbs) == "2AG"] <- "temp2AG"
+colnames(sigPathwayProbs)[colnames(sigPathwayProbs) == "5alphaP"] <- "temp5alphaP"
+# Identify pathways that are significantly different between ages
+pathwaysAOVage.group <- lapply(pathwaysShort, function(pathway) {
+  df <- sigPathwayProbs[,c("sample_id","dev.group", pathway)]
+  results <- summary(aov(as.formula(paste(pathway,"~dev.group")), data = df))
+  pval <- results[[1]][["Pr(>F)"]][[1]]
+  names(pval) <- pathway
+  return(pval)
+})
+
+
+names(pathwaysAOVage.group) <- pathwaysShort
+rankedPathways <- as.data.frame(unlist(pathwaysAOVage.group))
+colnames(rankedPathways) <- "pval"
+rownames(rankedPathways) <- pathwaysShort
+rankedPathways <- sort(rankedPathways, decreasing = FALSE)  
+rankedPathways$rank <- 1:nrow(rankedPathways)
+rankedPathways$FDRcrit <- (rankedPathways$rank/nrow(rankedPathways)) * 0.05
+rankedPathways$FDR <- ifelse(rankedPathways$pval<rankedPathways$FDRcrit,TRUE,FALSE)
+rankedPathways$p.adj <- rankedPathways$pval/nrow(rankedPathways)
+rankedPathways$p.adjResult <- ifelse(rankedPathways$p.adj<0.05,TRUE,FALSE)
+write.csv(rankedPathways,file="output/tables/DifferentiallyExpressedPathwaysAllDevgroups.csv", row.names = TRUE, col.names = TRUE)
+```
+
+
+```{r extract net communication prob from postnatal}
+# Calculate the net signaling between each celltype in each sample
+# Function to extract the net communication probability
+# FUNCTION extractNetCommunProb()
+extractNetCommunProb <- function (object, thresh = 0.05) 
+{ 
+  netP <- object@netP
+  prob <- object@netP$prob # an array of 1) senders, 2) receivers, 3) pathways
+  pathways <- dimnames(prob)[[3]]
+  netPathwayProbs <- lapply(pathways, function(pathway) sum(rowSums(prob[,,pathway])))
+  names(netPathwayProbs) <- object@netP$pathways
+  return(netPathwayProbs)
+}
+# END extractNetCommunProb()
+postnatal.chatlist <- chat.list[sampleMetadata$sample_id[sampleMetadata$dev.group != "Fetal"]]
+netSigPathwayProbs.list <- lapply(postnatal.chatlist, function(sample) {
+  x <- extractNetCommunProb(sample) %>% unlist
+  df <- data.frame(pathway=names(x),
+                   prob=x,
+                   log10prob=log10(x))
+  return(df)
+})
+names(netSigPathwayProbs.list) <- rownames(sampleMetadata[sampleMetadata$dev.group != "Fetal",])
+```
+
+```{r find top pathways for postnatal}
+# Top pathways in the postnatal dataset
+
+pathways <- lapply(postnatal.chatlist, function(chat) {chat@netP$pathways}) %>% unlist %>% unique
+
+# Initialize communication probability matrix for all pathways with a communication probability pval<0.05 for at least one sample
+sigPathwayProbs <- cbind(sampleMetadata[sampleMetadata$dev.group != "Fetal",],matrix(0,nrow=length(postnatal.chatlist),ncol=(length(pathways))))
+colnames(sigPathwayProbs) <- c("sample_id","project","dev.group",pathways)
+
+for (i in 1:length(netSigPathwayProbs.list)) {
+  sigPathwayProbs[names(netSigPathwayProbs.list[i]),rownames(netSigPathwayProbs.list[[i]])] <- netSigPathwayProbs.list[[i]]$prob
+}
+
+
+
+# Remove "-" from pathways names to facilitate extraction of anova p-values
+pathwaysShort <- sapply(pathways,function(pathway) {gsub("-","",pathway)})
+colnames(sigPathwayProbs) <-c("sample_id","project","dev.group",pathwaysShort)
+```
+
+```{r rank postnatal pathways}
+pathwaysShort[pathwaysShort == "2AG"] <- "temp2AG"
+pathwaysShort[pathwaysShort == "5alphaP"] <- "temp5alphaP"
+colnames(sigPathwayProbs)[colnames(sigPathwayProbs) == "2AG"] <- "temp2AG"
+colnames(sigPathwayProbs)[colnames(sigPathwayProbs) == "5alphaP"] <- "temp5alphaP"
+# Identify pathways that are significantly different between ages
+pathwaysAOVage.group <- lapply(pathwaysShort, function(pathway) {
+  df <- sigPathwayProbs[,c("sample_id","dev.group", pathway)]
+  results <- summary(aov(as.formula(paste(pathway,"~dev.group")), data = df))
+  pval <- results[[1]][["Pr(>F)"]][[1]]
+  names(pval) <- pathway
+  return(pval)
+})
+
+
+names(pathwaysAOVage.group) <- pathwaysShort
+rankedPathways <- as.data.frame(unlist(pathwaysAOVage.group))
+colnames(rankedPathways) <- "pval"
+rownames(rankedPathways) <- pathwaysShort
+rankedPathways <- sort(rankedPathways, decreasing = FALSE)  
+rankedPathways$rank <- 1:nrow(rankedPathways)
+rankedPathways$FDRcrit <- (rankedPathways$rank/nrow(rankedPathways)) * 0.05
+rankedPathways$FDR <- ifelse(rankedPathways$pval<rankedPathways$FDRcrit,TRUE,FALSE)
+rankedPathways$p.adj <- rankedPathways$pval/nrow(rankedPathways)
+rankedPathways$p.adjResult <- ifelse(rankedPathways$p.adj<0.05,TRUE,FALSE)
+write.csv(rankedPathways,file="output/tables/DifferentiallyExpressedPathways_postnataldevgroups.csv", row.names = TRUE, col.names = TRUE)
+```
+
+
+```{r get netp}
+samples <- sampleMetadata$sample_id[sampleMetadata$dev.group != "Fetal"]
+# Generate a dataframe of communication probabilities for each celltype of pathways with a significant
+netP.list <- lapply(samples, function(sample) {
+  df <- reshape2::melt(postnatal.chatlist[[sample]]@netP$prob, value.name = "prob")
+  colnames(df)[1:3] <- c("source","target","pathway_name")
+  meta <- data.frame(sample = rep(sample,times = nrow(df)),
+                     age.group = rep(sampleMetadata[sample,"dev.group"],times = nrow(df)))
+  df <- cbind(meta,df)
+})
+
+netP.df <- do.call("rbind", netP.list)
+
+
+
+combos <- cbind(rep(levels.celltype, times = length(levels.celltype)),
+                do.call("rbind", lapply(as.list(levels.celltype), function(celltype) {
+                  as.data.frame(rep(celltype,times=length(levels.celltype)))
+                })),
+                as.data.frame(matrix(0, nrow = length(levels.celltype)^2, ncol = length(pathways))))
+colnames(combos) <- c("source","target",pathways)
+```
+
+
+```{r get sigNetP}
+# Initialize
+sigNetP <- do.call("rbind",lapply(samples, function(sample) {
+  return(cbind(rep(sample,times=length(levels.celltype)^2),
+               rep(sampleMetadata[sample,"dev.group"],times=length(levels.celltype)^2),
+               combos))
+}))
+colnames(sigNetP) <- c("sample","dev.group","source","target",pathwaysShort)
+
+for (i in 1:nrow(netP.df)) {
+  index <- which(sigNetP[,"sample"] == netP.df[i,"sample"] &
+                   sigNetP[,"source"] == as.character(netP.df[i,"source"]) &
+                   sigNetP[,"target"] == as.character(netP.df[i,"target"]))
+  sigNetP[index,as.character(netP.df[i,"pathway_name"])] <- netP.df[i,"prob"]
+}
+
+# FUNCTION returnPval()
+returnPval <- function(mat, metaCol, sourceCell, targetCell, pathway){
+  df <- mat[which(mat[,"source"]==sourceCell & sigNetP[,"target"]==targetCell),c(metaCol,pathway)]
+  results <- summary(aov(as.formula(paste0(pathway,"~",metaCol)), data = df))
+  pval <- results[[1]][["Pr(>F)"]][[1]]
+  resultSum <- data.frame(metaCol = metaCol,
+                          source = sourceCell,
+                          target =targetCell,
+                          pathway = pathway,
+                          pval = as.numeric(pval))
+  return(resultSum)
+}
+# END FUNCTION returnPval()
+
+# FUNCTION rankCellComPval()
+rankCellComPval <- function(mat, metaCol, celltypes, pathways, FDR = 0.05) {
+  # Generate dataframe of cell permutation interactions
+  source_target <- cbind(rep(celltypes, times = length(celltypes)),
+                        do.call("rbind", lapply(as.list(celltypes), function(celltype) {
+                          as.data.frame(rep(celltype,times=length(celltypes)))
+                        })))
+  # Generate dataframe of cell permutations for each pathway
+  permutations <- cbind(do.call("rbind",replicate(n=length(pathways), source_target, simplify = FALSE)),
+                        do.call("rbind", lapply(pathways, function(pathway){as.data.frame(rep(pathway,times=nrow(source_target)))})))
+  colnames(permutations) <- c("source","target","pathway")
+  # Calculate p-val for analysis of variance of interaction probabilities for each group in the metaCol category
+  # Will returned results of paired T-test if two groups
+  AOVs <- lapply(1:nrow(permutations), function(i) returnPval(mat, metaCol,
+                                                              sourceCell=permutations[i,"source"],
+                                                              targetCell=permutations[i,"target"],
+                                                              pathway=permutations[i,"pathway"]))
+    # Convert list to dataframe
+  AOVs <- do.call("rbind",AOVs)
+  # Reorder based on significance and calculate the p-value corresponding to an FDR of 
+  AOVs <- AOVs[order(AOVs[,"pval"],decreasing=FALSE),]
+  AOVs$rank <- 1:nrow(AOVs)
+  AOVs$FDR <- (AOVs$rank/nrow(AOVs)) * FDR
+  AOVs$FDRresult <- ifelse(AOVs$pval<AOVs$FDR,TRUE,FALSE)
+  return(AOVs)
+}
+```
+
+```{r identify most significant netp}
+# ID the most significantly different cell-cell communication pathways by grade
+RankedInteractionProb_Age <- rankCellComPval(mat = sigNetP, metaCol = "dev.group", celltypes = levels.celltype, pathways = pathwaysShort)
+
+```
+
+```{r Look at all active pathways across the dataset}
+# Look at all active pathways across the dataset
+# initialize
+activePathways <- chat.list[[1]]@netP$pathways
+for (i in 2:length(chat.list)) {
+  activePathways <- c(chat.list[[i]]@netP$pathways,activePathways)
+}
+#activePathways 
+length(activePathways)
+# 
+
+# Identify the unique pathways
+activePathways <- unique(activePathways)
+length(activePathways)
+
+
+# FUNCTION extractCentrality()
+extractCentrality <- function(object, signaling = NULL, pattern = c("outgoing","incoming","all"), slot.name = "netP") 
+{
+  pattern <- match.arg(pattern)
+  if (length(slot(object, slot.name)$centr) == 0) {
+    stop("Please run `netAnalysis_computeCentrality` to compute the network centrality scores! ")
+  }
+  centr <- slot(object, slot.name)$centr
+  outgoing <- matrix(0, nrow = nlevels(object@idents), ncol = length(centr))
+  incoming <- matrix(0, nrow = nlevels(object@idents), ncol = length(centr))
+  dimnames(outgoing) <- list(levels(object@idents), names(centr))
+  dimnames(incoming) <- dimnames(outgoing)
+  for (i in 1:length(centr)) {
+    outgoing[, i] <- centr[[i]]$outdeg
+    incoming[, i] <- centr[[i]]$indeg
+  }
+  if (pattern == "outgoing") {
+    mat <- t(outgoing)
+    legend.name <- "Outgoing"
+  }
+  else if (pattern == "incoming") {
+    mat <- t(incoming)
+    legend.name <- "Incoming"
+  }
+  mat <- cbind(rownames(mat),mat)
+  colnames(mat) <- c("pathway",levels(object@idents))
+  return(mat)
+}                                                  
+# END FUNCTION extractCentrality()
+
+# FUNCTION summarizeCentrality()
+# This function extracts the centrality scores for each celltype
+summarizeCentrality <- function(chat.list, celltypes, sampleMetadata, pattern = c("outgoing","incoming")) {
+  # Identify all pathways active in at least one sample
+  pathways <- chat.list[[1]]@netP$pathways
+  for (i in 2:length(chat.list)) {
+    pathways <- c(chat.list[[i]]@netP$pathways,pathways)
+  }
+  pathways <- unique(pathways)
+  # Extract centrality and generate a dataframe of centrality scores for each sample
+  centerList <- lapply(chat.list, function(chat) {
+    center <- extractCentrality(chat, pattern = pattern)
+  })
+  
+  for (i in 1:length(chat.list)) {
+    centerList[[i]] <- cbind(data.frame(sample = rep(names(centerList[i]),times=nrow(centerList[[i]]))),
+                             centerList[[i]])
+  }
+  center <- do.call("rbind",centerList)
+  rownames(center) <- 1:nrow(center)
+  # Generate a dataframe with centrality scores and metadata for all samples
+  samples <- lapply(names(chat.list), function(name) data.frame(sample = rep(name,times=length(pathways)),
+                                                                dev.group = rep(sampleMetadata[name,"dev.group"],times=length(pathways)),
+                                                                pathway = pathways
+                                                                ))
+  samples <- do.call("rbind", samples)
+  mat <- as.data.frame(matrix(0, nrow=(length(chat.list)*length(pathways)), ncol = length(celltypes)))
+  colnames(mat) <- celltypes
+  mat <- cbind(samples,mat)
+  for (i in 1:nrow(center)) {
+    for (j in 1:length(celltypes)) {
+      mat[which(mat[,"sample"]==center[i,"sample"] & mat[,"pathway"]==center[i,"pathway"]),celltypes[j]] <- center[i,celltypes[j]]
+    }
+  }
+  mat[,celltypes] <- apply(mat[,celltypes], 2, function(col) as.numeric(as.character(col)))
+  return(mat)
+}
+# END FUNCTION summarizeCentrality()
+```
+
+```{r Summarize centrality}
+###########
+# Summarize centrality scores for each group 
+# Outgoing signals
+outgoing <- summarizeCentrality(chat.list, celltypes=levels.celltype, sampleMetadata=sampleMetadata, pattern = "outgoing")
+outgoing
+# outgoing summarized by grade
+outGradeMeans <- outgoing %>%
+  group_by(dev.group,pathway) %>%
+  summarise_at(vars(levels.celltype), mean)
+outGradeMeans <- as.data.frame(outGradeMeans)
+
+# Incoming
+incoming <- summarizeCentrality(chat.list, celltypes=levels.celltype, sampleMetadata=sampleMetadata, pattern = "incoming")
+incoming
+print(sapply(incoming,class))
+# incoming summarized by grade
+inGradeMeans <- incoming %>%
+  group_by(dev.group,pathway) %>%
+  summarise_at(vars(levels.celltype), mean)
+inGradeMeans <- as.data.frame(inGradeMeans)
+```
+
+```{r heatmap}
+# HM
+netAnalysisMat_signalingRole_heatmap <- function (mat, signaling = NULL, pattern = c("outgoing","incoming","all"), 
+                                                     slot.name = "netP", 
+                                                     color.use = NULL, cell.order = NULL,
+                                                     color.heatmap = "BuGn", title = NULL, width = 10, height = 8, 
+                                                     font.size = 8, font.size.title = 10, cluster.rows = FALSE, 
+                                                     cluster.cols = FALSE, subset = c(1,20), group.name = "Cell_Type") 
+  
+  
+{
+  pattern <- match.arg(pattern)
+  if (pattern == "outgoing") {
+    mat <- t(mat)
+    legend.name <- "Outgoing"
+  }
+  else if (pattern == "incoming") {
+    mat <- t(mat)
+    legend.name <- "Incoming"
+  }
+  else if (pattern == "all") {
+    mat <- t(mat)
+    legend.name <- "All"
+  }
+  if (is.null(title)) {
+    title <- paste0(legend.name, " signaling patterns")
+  }
+  else {
+    title <- paste0(paste0(legend.name, " signaling patterns"), 
+                    " - ", title)
+  }
+  if (!is.null(signaling)) {
+    mat1 <- mat[rownames(mat) %in% signaling, , drop = FALSE]
+    mat <- matrix(0, nrow = length(signaling), ncol = ncol(mat))
+    idx <- match(rownames(mat1), signaling)
+    mat[idx[!is.na(idx)], ] <- mat1
+    dimnames(mat) <- list(signaling, colnames(mat1))
+  }
+  mat.ori <- mat
+  mat <- sweep(mat, 1L, apply(mat, 1, max), "/", check.margin = FALSE)
+  mat[mat == 0] <- NA
+  if (is.null(cell.order)==FALSE) {
+    mat <- mat[cell.order,cell.order]
+  }
+  if (is.null(color.use)) {
+    color.use <- scPalette(length(colnames(mat)))
+  }
+  color.heatmap.use = (grDevices::colorRampPalette((RColorBrewer::brewer.pal(n = 9,
+                                                                             name = color.heatmap))))(100)
+  df <- data.frame(group = factor(colnames(mat),levels=levels.celltype))
+  rownames(df) <- colnames(mat)
+  names(color.use) <- colnames(mat)
+  col_annotation <- HeatmapAnnotation(df = df, col = list(group = color.use), show_annotation_name = F)
+  ha2 = HeatmapAnnotation(Strength = anno_barplot(colSums(mat.ori[subset[1]:subset[2],]), 
+                                                  border = FALSE, gp = gpar(fill = color.use, col = color.use)), 
+                          show_annotation_name = FALSE)
+  pSum <- rowSums(mat.ori)
+  pSum.original <- pSum
+  pSum <- -1/log(pSum)
+  pSum[is.na(pSum)] <- 0
+  idx1 <- which(is.infinite(pSum) | pSum < 0)
+  if (length(idx1) > 0) {
+    values.assign <- seq(max(pSum) * 1.1, max(pSum) * 1.5, 
+                         length.out = length(idx1))
+    position <- sort(pSum.original[idx1], index.return = TRUE)$ix
+    pSum[idx1] <- values.assign[match(1:length(idx1), position)]
+  }
+  pSum=pSum[subset[1]:subset[2]]
+  ha1 = rowAnnotation(Strength = anno_barplot(rowSums(mat.ori[subset[1]:subset[2],]), border = FALSE), 
+                      show_annotation_name = FALSE)
+  if (min(mat, na.rm = T) == max(mat, na.rm = T)) {
+    legend.break <- max(mat, na.rm = T)
+  }
+  else {
+    legend.break <- c(round(min(mat, na.rm = T), digits = 1), 
+                      round(max(mat, na.rm = T), digits = 1))
+  }
+  ht1 = Heatmap(mat[subset[1]:subset[2],], col = color.heatmap.use, na_col = "white", 
+                name = "Relative strength", bottom_annotation = col_annotation, 
+                top_annotation = ha2, right_annotation = ha1, cluster_rows = cluster.rows, 
+                cluster_columns = cluster.rows, row_names_side = "left", 
+                row_names_rot = 0, row_names_gp = gpar(fontsize = font.size), 
+                column_names_gp = gpar(fontsize = font.size), width = unit(width, 
+                                                                           "cm"), height = unit(height, "cm"), column_title = title, 
+                column_title_gp = gpar(fontsize = font.size.title), 
+                column_names_rot = 90, heatmap_legend_param = list(title_gp = gpar(fontsize = 8, 
+                                                                                   fontface = "plain"), title_position = "leftcenter-rot", 
+                                                                   border = NA, at = legend.break, legend_height = unit(20, 
+                                                                                                                        "mm"), labels_gp = gpar(fontsize = 8), grid_width = unit(2, 
+                                                                                                                                                                                 "mm")))
+  return(ht1)
+}
+```
+
+
+```{r plot heatmaps 1}
+  outgoing.list <- list()
+  incoming.list <-list()
+
+for (sg in unique(sampleMetadata$dev.group)) {
+sgOut <- outGradeMeans[which(outGradeMeans[,"dev.group"]==sg),]
+rownames(sgOut) <- sgOut[,"pathway"]
+sgOut <- sgOut[,-c(1,2)]
+sgOut <- sgOut[rowSums(sgOut)>0,]
+sgOut <- sgOut[order(rowSums(sgOut),decreasing=TRUE),]
+
+
+sgIn <- inGradeMeans[which(inGradeMeans[,"dev.group"]==sg),]
+rownames(sgIn) <- sgIn[,"pathway"]
+sgIn <- sgIn[,-c(1,2)]
+sgIn <- sgIn[rowSums(sgIn)>0,]
+sgIn <- sgIn[order(rowSums(sgIn),decreasing=TRUE),]
+
+  outgoing.list <- append(outgoing.list, list(sgOut))
+  incoming.list<-append(incoming.list,list(sgIn))
+
+
+
+pdf(paste0("output/figures/CellChat/Heatmaps/", sg,"In.pdf"), height=8, width=10)
+h1 <- netAnalysisMat_signalingRole_heatmap(mat=t(sgIn),
+                                      cluster.cols = FALSE,
+                                     pattern = "incoming",title = sg, width = 15, height = 10,
+                                     font.size = 8, font.size.title = 10,
+                                     color.use = cellcolor)
+draw(h1)
+dev.off()
+# outgoing heatmap
+pdf(paste0("output/figures/CellChat/Heatmaps/", sg,"Out.pdf"),height=8, width=10)
+h2  <- netAnalysisMat_signalingRole_heatmap(mat=t(sgOut),
+                                     cluster.cols = FALSE,
+                                     pattern = "outgoing",title = sg, width = 15, height = 10,
+                                     font.size = 8, font.size.title = 10,
+                                     color.use = cellcolor)
+draw(h2)
+dev.off()
+
+ }
+
+
+```
+
+
+
+```{r prep list for plotting}
+dev.list <-unique(sampleMetadata$dev.group)
+in.df <- data.frame(count = colSums(incoming.list[[1]]),
+                            cell = names(colSums(incoming.list[[1]])), 
+                            dev.group = dev.list[1])
+for (i in 2:length(incoming.list)){
+  in.df <- rbind(in.df,data.frame(count = colSums(incoming.list[[i]]),
+                            cell = names(colSums(incoming.list[[i]])), 
+                            dev.group = dev.list[i]))
+              }
+  in.df$cell <- factor(in.df$cell, levels= levels.celltype)
+  in.df$dev.group <- factor(in.df$dev.group, levels= dev.list)
+  rownames(in.df) <- NULL
+
+
+```
+
+```{r plot incoming barplots}
+ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))
+
+ggsave("output/figures/CellChat/incomingBarplot.pdf", height = 6,width = 4.25)
+
+
+ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+theme(strip.text = element_blank())
+
+ggsave("output/figures/CellChat/incomingBarplot_noLabels.pdf", height = 6,width = 4.25)
+
+ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()
+
+ggsave("output/figures/CellChat/incomingBarplot_noLegend.pdf", height = 6,width = 4.25)
+
+ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+theme(strip.text = element_blank())+NoLegend()
+
+ggsave("output/figures/CellChat/incomingBarplot_noLabels_noLegend.pdf", height = 3.5,width = 2.25)
+
+ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+theme(strip.text = element_blank())+NoLegend()+xlab("")+ylab("")+ theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+
+ggsave("output/figures/CellChat/incomingBarplot_noLabels_noLegend_noAxes_noXLabels.pdf", height = 3,width = 2)
+
+incom <- ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1,strip.position = "left")  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()+xlab("")+ylab("")+ theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),strip.placement = "outside",strip.text = element_text(size = 7))
+incom
+ggsave("output/figures/CellChat/incomingBarplot_leftLabels_noLegend_noAxes_noXLabels.pdf", height = 3.25,width = 2)
+
+
+```
+
+```{r plot incoming barplot per group}
+for (dev in levels(in.df$dev.group)) {
+  
+  if (dev == "Fetal") {
+  ggplot(in.df[in.df$dev.group == dev,], aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+ ylim(0,40)+
+  theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()
+    } else {
+    ggplot(in.df[in.df$dev.group == dev,], aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+ ylim(0,25)+
+  theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()
+    }
+ggsave(paste0("output/figures/CellChat/",dev,"incomingBarplot_noLegend_v2.pdf"), height = 3,width = 4.25)
+
+}
+```
+
+
+
+
+```{r prep out list for plots}
+dev.list <-unique(sampleMetadata$dev.group)
+out.df <- data.frame(count = colSums(outgoing.list[[1]]),
+                            cell = names(colSums(outgoing.list[[1]])), 
+                            dev.group = dev.list[1])
+for (i in 2:length(outgoing.list)){
+  out.df <- rbind(out.df,data.frame(count = colSums(outgoing.list[[i]]),
+                            cell = names(colSums(outgoing.list[[i]])), 
+                            dev.group = dev.list[i]))
+              }
+  out.df$cell <- factor(out.df$cell, levels= levels.celltype)
+  out.df$dev.group <- factor(out.df$dev.group, levels= dev.list)
+  rownames(out.df) <- NULL
+
+
+```
+
+
+
+```{r plot outgoing barplots}
+ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))
+
+ggsave("output/figures/CellChat/outgoingBarplot.pdf", height = 6,width = 4.25)
+
+
+ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+theme(strip.text = element_blank())
+
+ggsave("output/figures/CellChat/outgoingBarplot_noLabels.pdf", height = 6,width = 4.25)
+
+ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()
+
+ggsave("output/figures/CellChat/outgoingBarplot_noLegend.pdf", height = 6,width = 4.25)
+
+ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+theme(strip.text = element_blank())+NoLegend()
+
+ggsave("output/figures/CellChat/outgoingBarplot_noLabels_noLegend.pdf", height = 3.5,width = 2.25)
+
+ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1)  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+theme(strip.text = element_blank())+NoLegend()+xlab("")+ylab("")+ theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+
+ggsave("output/figures/CellChat/outgoingBarplot_noLabels_noLegend_noAxes_noXLabels.pdf", height = 3,width = 2)
+
+ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1,strip.position = "left")  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()+xlab("")+ylab("")+ theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),strip.placement = "outside",strip.text = element_text(size = 7))
+ggsave("output/figures/CellChat/outgoingBarplot_leftLabels_noLegend_noAxes_noXLabels.pdf", height = 3.25,width = 2)
+
+
+```
+
+```{r plot outgoing barplots by group}
+for (dev in out.df$dev.group) {
+  if (dev == "Fetal") {
+  ggplot(out.df[out.df$dev.group == dev,], aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+ ylim(0,40)+
+  theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()
+  } else {
+  ggplot(out.df[out.df$dev.group == dev,], aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+ ylim(0,25)+
+  theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()
+  }
+
+ggsave(paste0("output/figures/CellChat/",dev,"_outgoingBarplot_noLegend_v2.pdf"), height = 3,width = 4.25)
+
+}
+```
+
+
+```{r stacked barplots prep}
+
+dev.list <-unique(sampleMetadata$dev.group)
+in.df <- data.frame(count = rowSums(incoming.list[[1]]),
+                            pathway = names(rowSums(incoming.list[[1]])), 
+                            dev.group = dev.list[1])
+for (i in 2:length(incoming.list)){
+  in.df <- rbind(in.df,data.frame(count = rowSums(incoming.list[[i]]),
+                            pathway = names(rowSums(incoming.list[[i]])), 
+                            dev.group = dev.list[i]))
+              }
+  in.df$dev.group <- factor(in.df$dev.group, levels= dev.list)
+  rownames(in.df) <- NULL
+
+dev.list <-unique(sampleMetadata$dev.group)
+out.df <- data.frame(count = rowSums(outgoing.list[[1]]),
+                            pathway = names(rowSums(outgoing.list[[1]])), 
+                            dev.group = dev.list[1])
+for (i in 2:length(outgoing.list)){
+  out.df <- rbind(out.df,data.frame(count = rowSums(outgoing.list[[i]]),
+                            pathway = names(rowSums(outgoing.list[[i]])), 
+                            dev.group = dev.list[i]))
+              }
+  out.df$dev.group <- factor(out.df$dev.group, levels= dev.list)
+  rownames(out.df) <- NULL
+  
+out.df <- out.df[order(out.df$count, decreasing = T),]
+out.df$pathway <- factor(out.df$pathway, levels = rev(unique(out.df$pathway)))
+
+```
+
+
+```{r stacked barplots}
+for (dev in dev.list[1]){
+out.dev <- out.df[out.df$dev.group == dev,]
+out.dev <- out.dev[order(out.dev$count, decreasing = T),]
+out.dev$pathway <- factor(out.dev$pathway, levels = rev(unique(out.dev$pathway)))
+ggplot(out.dev[1:5,], aes(y=pathway, x=count))+
+  geom_bar(stat='identity')+ #xlim(c(0,20))+
+  theme_classic()+NoLegend()
+ggsave(paste0("output/figures/CellChat/stackedBarplots/out_", dev, "_paths.pdf"))
+
+}
+
+
+for (dev in dev.list[1]){
+in.dev <- in.df[in.df$dev.group == dev,]
+in.dev <- in.dev[order(in.dev$count, decreasing = T),]
+in.dev$pathway <- factor(in.dev$pathway, levels = rev(unique(in.dev$pathway)))
+ggplot(in.dev[1:5,], aes(y=pathway, x=count))+
+  geom_bar(stat='identity')+#xlim(c(0,20))+
+  theme_classic()+NoLegend()
+ggsave(paste0("output/figures/CellChat/stackedBarplots/in_", dev, "_paths.pdf"))
+
+}
+```
+
+```{r plot Figure 6B}
+for (dev in dev.list){
+  out.dev <- out.df[out.df$dev.group == dev,]
+  out.dev <- out.dev[order(out.dev$count, decreasing = T),]
+  out.dev$pathway <- factor(out.dev$pathway, levels = rev(unique(out.dev$pathway)))
+  if (dev == "Fetal") {
+    out.dev.df <- out.dev
+  } else {
+    out.dev.df <- rbind(out.dev.df, out.dev)
+  }
+}
+
+out.dev.df <- subset(out.dev.df, pathway == "Glutamate" |  pathway == "NRXN" |  pathway == "NRG" | pathway == "ADGRL" | pathway == "NCAM")
+ggplot(out.dev.df, aes(x=dev.group, y=count, fill = dev.group))+
+  geom_bar(stat='identity')+#xlim(c(0,20))+
+  scale_fill_manual(values = Development) +
+  theme_classic()+NoLegend() + facet_wrap(~pathway,nrow=1)
+ggsave("dev.group_pathway_barplots.pdf")
+
+
+ggplot(out.dev.df, aes(x=dev.group, y=count, fill = dev.group))+
+  geom_bar(stat='identity')+#xlim(c(0,20))+
+  scale_fill_manual(values = Development) +
+  theme_classic() + facet_wrap(~pathway)
+ggsave("dev.group_pathway_barplots_legend.pdf")
+
+
+
+
+```
+
+
+```{r incoming outgoing barplots}
+
+incom <- ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1,strip.position = "left")  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()+xlab("")+ylab("")+ #ylim(0,10)+
+  theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),strip.placement = "outside",strip.text = element_blank())
+
+
+out<-ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+#ylim(0,10)+
+  facet_wrap(~dev.group,  ncol=1,strip.position = "left")  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()+xlab("")+ylab("")+ theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),strip.placement = "outside",strip.text =element_text(size = 7))
+
+out+incom
+ggsave("output/figures/CellChat/out_in_left.pdf", height = 3.25,width = 4)
+
+
+
+incom <- ggplot(in.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+
+  facet_wrap(~dev.group,  ncol=1,strip.position = "right")  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()+xlab("")+ylab("")+#ylim(0,10)+ 
+  theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),strip.placement = "outside",strip.text = element_text(size = 7))
+
+
+out<-ggplot(out.df, aes(x=cell, y=count,fill=cell))+
+  geom_bar(stat='identity')+ scale_fill_manual(values=cellcolor)+#ylim(0,10)+
+  facet_wrap(~dev.group,  ncol=1,strip.position = "left")  + theme_classic()+theme(axis.text.x = element_text(angle = 90))+NoLegend()+xlab("")+ylab("")+ theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),strip.placement = "outside",strip.text = element_blank())
+
+out+incom
+ggsave("output/figures/CellChat/out_in_right.pdf", height = 3.25,width = 4)
+```
+
+
+
+```{r cellchord}
+library(scater)
+source("cellchord.R")
+netP.df <- do.call("rbind", netP.list)
+colnames(netP.df)[2] <- "dev.group"
+netP.df$dev.group <- factor(netP.df$dev.group, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+for (path in c(rownames(rankedPathways)[1:20], "NRXN","Glutamate")) {
+  pdf(paste0("output/figures/CellChat/chordDiagrams/postnatal/",path,".pdf"),width = 30, height =10)
+  par( mfrow=c(1,5) )
+  for (i in 1:length(levels(netP.df$dev.group))) {
+    age <- levels(netP.df$dev.group)[i]
+    net<- netP.df[netP.df$dev.group == age & netP.df$pathway_name == path,]
+    if (dim(net)[1] > 0) {
+        net$source <- factor(net$source, levels = levels.celltype)
+        net$target <- factor(net$target, levels = levels.celltype)
+        cell.order <- factor(unique(net$source), levels = levels.celltype)
+       
+        #pdf(paste0("output/figures/CellChat/chordDiagrams/",path,"_",age,"_chord.pdf"))
+        gg <- chord_cell_int2(net = net, title.name = as.character(age), color.use = cellcolor, remove.isolate = T)
+        #dev.off()
+    }
+  }
+  dev.off()
+}
+```
+
+```{r}
+netVisual_bubblemat <- function (mat, sources.use = NULL, targets.use = NULL, signaling = NULL, 
+                                 pairLR.use = NULL, sort.by.source = FALSE, sort.by.target = FALSE, 
+                                 sort.by.source.priority = TRUE, color.heatmap = c("Spectral","viridis"), n.colors = 10, direction = -1, thresh = 0.05, 
+                                 comparison = NULL, group = NULL, remove.isolate = FALSE, 
+                                 max.dataset = NULL, min.dataset = NULL, min.quantile = 0, 
+                                 max.quantile = 1, line.on = TRUE, line.size = 0.2, color.text.use = TRUE, 
+                                 color.text = NULL, dot.size.min = NULL, dot.size.max = NULL, 
+                                 title.name = NULL, font.size = 10, font.size.title = 10, 
+                                 show.legend = TRUE, grid.on = TRUE, color.grid = "grey90", 
+                                 angle.x = 90, vjust.x = NULL, hjust.x = NULL, return.data = FALSE, cell_types = NULL, fix.st = F, dev.group) 
+{
+  color.heatmap <- match.arg(color.heatmap)
+  if (is.null(vjust.x) | is.null(hjust.x)) {
+    angle = c(0, 45, 90)
+    hjust = c(0, 1, 1)
+    vjust = c(0, 1, 0.5)
+    vjust.x = vjust[angle == angle.x]
+    hjust.x = hjust[angle == angle.x]
+  }
+  if (length(color.heatmap) == 1) {
+    color.use <- tryCatch({
+      RColorBrewer::brewer.pal(n = n.colors, name = color.heatmap)
+    }, error = function(e) {
+      (scales::viridis_pal(option = color.heatmap, direction = -1))(n.colors)
+    })
+  }else {
+    color.use <- color.heatmap
+  }
+  if (direction == -1) {
+    color.use <- rev(color.use)
+  }
+  if (!is.null(pairLR.use)) {
+    if (!is.data.frame(pairLR.use)) {
+      stop("pairLR.use should be a data frame with a signle column named either 'interaction_name' or 'pathway_name' ")
+    }
+    else if ("pathway_name" %in% colnames(pairLR.use)) {
+      pairLR.use$pathway_name <- as.character(pairLR.use$pathway_name)
+    }
+    else if ("interaction_name" %in% colnames(pairLR.use)) {
+      pairLR.use$interaction_name <- as.character(pairLR.use$interaction_name)
+    }
+  }
+  if (is.null(comparison)) {
+    cells.level <- levels.celltype
+    if (is.numeric(sources.use)) {
+      sources.use <- cells.level[sources.use]
+    }
+    if (is.numeric(targets.use)) {
+      targets.use <- cells.level[targets.use]
+    }
+    df.net <- mat
+    df.net$source.target <- paste(df.net$source, df.net$target, 
+                                  sep = " -> ")
+    source.target <- paste(rep(sources.use, each = length(targets.use)), 
+                           targets.use, sep = " -> ")
+    source.target.isolate <- setdiff(source.target, unique(df.net$source.target))
+    if (length(source.target.isolate) > 0) {
+      df.net.isolate <- as.data.frame(matrix(NA, nrow = length(source.target.isolate), 
+                                             ncol = ncol(df.net)))
+      colnames(df.net.isolate) <- colnames(df.net)
+      df.net.isolate$source.target <- source.target.isolate
+      df.net.isolate$interaction_name_2 <- df.net$interaction_name_2[1]
+      df.net.isolate$pval <- 1
+      a <- stringr::str_split(df.net.isolate$source.target, 
+                              " -> ", simplify = T)
+      df.net.isolate$source <- as.character(a[, 1])
+      df.net.isolate$target <- as.character(a[, 2])
+      df.net <- rbind(df.net, df.net.isolate)
+    }
+    df.net$pval[df.net$pval > 0.05] = 1
+    df.net$pval[df.net$pval > 0.01 & df.net$pval <= 0.05] = 2
+    df.net$pval[df.net$pval <= 0.01] = 3
+    df.net$prob[df.net$prob == 0] <- NA
+    df.net$prob.original <- df.net$prob
+    df.net$prob <- -1/log(df.net$prob)
+    idx1 <- which(is.infinite(df.net$prob) | df.net$prob < 
+                    0)
+    if (sum(idx1) > 0) {
+      values.assign <- seq(max(df.net$prob, na.rm = T) * 
+                             1.1, max(df.net$prob, na.rm = T) * 1.5, length.out = length(idx1))
+      position <- sort(prob.original[idx1], index.return = TRUE)$ix
+      df.net$prob[idx1] <- values.assign[match(1:length(idx1), 
+                                               position)]
+    }
+    df.net$source <- factor(df.net$source, levels = cells.level[cells.level %in% 
+                                                                  unique(df.net$source)])
+    df.net$target <- factor(df.net$target, levels = cells.level[cells.level %in% 
+                                                                  unique(df.net$target)])
+    group.names <- paste(rep(levels(df.net$source), each = length(levels(df.net$target))), 
+                         levels(df.net$target), sep = " -> ")
+    df.net$interaction_name_2 <- as.character(df.net$interaction_name_2)
+    df.net <- with(df.net, df.net[order(interaction_name_2), 
+    ])
+    df.net$interaction_name_2 <- factor(df.net$interaction_name_2, 
+                                        levels = unique(df.net$interaction_name_2))
+    cells.order <- group.names
+    df.net$source.target <- factor(df.net$source.target, 
+                                   levels = cells.order)
+    df <- df.net
+  }
+  else {
+    dataset.name <- names(object@net)
+    df.net.all <- subsetCommunication(object, slot.name = "net", 
+                                      sources.use = sources.use, targets.use = targets.use, 
+                                      signaling = signaling, pairLR.use = pairLR.use, 
+                                      thresh = thresh)
+    df.all <- data.frame()
+    for (ii in 1:length(comparison)) {
+      cells.level <- levels(object@idents[[comparison[ii]]])
+      if (is.numeric(sources.use)) {
+        sources.use <- cells.level[sources.use]
+      }
+      if (is.numeric(targets.use)) {
+        targets.use <- cells.level[targets.use]
+      }
+      df.net <- df.net.all[[comparison[ii]]]
+      df.net$interaction_name_2 <- as.character(df.net$interaction_name_2)
+      df.net$source.target <- paste(df.net$source, df.net$target, 
+                                    sep = " -> ")
+      source.target <- paste(rep(sources.use, each = length(targets.use)), 
+                             targets.use, sep = " -> ")
+      source.target.isolate <- setdiff(source.target, 
+                                       unique(df.net$source.target))
+      if (length(source.target.isolate) > 0) {
+        df.net.isolate <- as.data.frame(matrix(NA, nrow = length(source.target.isolate), 
+                                               ncol = ncol(df.net)))
+        colnames(df.net.isolate) <- colnames(df.net)
+        df.net.isolate$source.target <- source.target.isolate
+        df.net.isolate$interaction_name_2 <- df.net$interaction_name_2[1]
+        df.net.isolate$pval <- 1
+        a <- stringr::str_split(df.net.isolate$source.target, 
+                                " -> ", simplify = T)
+        df.net.isolate$source <- as.character(a[, 1])
+        df.net.isolate$target <- as.character(a[, 2])
+        df.net <- rbind(df.net, df.net.isolate)
+      }
+      df.net$source <- factor(df.net$source, levels = cells.level[cells.level %in% 
+                                                                    unique(df.net$source)])
+      df.net$target <- factor(df.net$target, levels = cells.level[cells.level %in% 
+                                                                    unique(df.net$target)])
+      group.names <- paste(rep(levels(df.net$source), 
+                               each = length(levels(df.net$target))), levels(df.net$target), 
+                           sep = " -> ")
+      group.names0 <- group.names
+      group.names <- paste0(group.names0, " (", dataset.name[comparison[ii]], 
+                            ")")
+      if (nrow(df.net) > 0) {
+        df.net$pval[df.net$pval > 0.05] = 1
+        df.net$pval[df.net$pval > 0.01 & df.net$pval <= 
+                      0.05] = 2
+        df.net$pval[df.net$pval <= 0.01] = 3
+        df.net$prob[df.net$prob == 0] <- NA
+        df.net$prob.original <- df.net$prob
+        df.net$prob <- -1/log(df.net$prob)
+      }
+      else {
+        df.net <- as.data.frame(matrix(NA, nrow = length(group.names), 
+                                       ncol = 5))
+        colnames(df.net) <- c("interaction_name_2", 
+                              "source.target", "prob", "pval", "prob.original")
+        df.net$source.target <- group.names0
+      }
+      df.net$group.names <- as.character(df.net$source.target)
+      df.net$source.target <- paste0(df.net$source.target, 
+                                     " (", dataset.name[comparison[ii]], ")")
+      df.net$dataset <- dataset.name[comparison[ii]]
+      df.all <- rbind(df.all, df.net)
+    }
+    if (nrow(df.all) == 0) {
+      stop("No interactions are detected. Please consider changing the cell groups for analysis. ")
+    }
+    idx1 <- which(is.infinite(df.all$prob) | df.all$prob < 
+                    0)
+    if (sum(idx1) > 0) {
+      values.assign <- seq(max(df.all$prob, na.rm = T) * 
+                             1.1, max(df.all$prob, na.rm = T) * 1.5, length.out = length(idx1))
+      position <- sort(df.all$prob.original[idx1], index.return = TRUE)$ix
+      df.all$prob[idx1] <- values.assign[match(1:length(idx1), 
+                                               position)]
+    }
+    df.all$interaction_name_2[is.na(df.all$interaction_name_2)] <- df.all$interaction_name_2[!is.na(df.all$interaction_name_2)][1]
+    df <- df.all
+    df <- with(df, df[order(interaction_name_2), ])
+    df$interaction_name_2 <- factor(df$interaction_name_2, 
+                                    levels = unique(df$interaction_name_2))
+    cells.order <- c()
+    dataset.name.order <- c()
+    for (i in 1:length(group.names0)) {
+      for (j in 1:length(comparison)) {
+        cells.order <- c(cells.order, paste0(group.names0[i], 
+                                             " (", dataset.name[comparison[j]], ")"))
+        dataset.name.order <- c(dataset.name.order, 
+                                dataset.name[comparison[j]])
+      }
+    }
+    df$source.target <- factor(df$source.target, levels = cells.order)
+  }
+  min.cutoff <- quantile(df$prob, min.quantile, na.rm = T)
+  max.cutoff <- quantile(df$prob, max.quantile, na.rm = T)
+  df$prob[df$prob < min.cutoff] <- min.cutoff
+  df$prob[df$prob > max.cutoff] <- max.cutoff
+  if (remove.isolate) {
+    df <- df[!is.na(df$prob), ]
+    line.on <- FALSE
+  }
+  if (!is.null(max.dataset)) {
+    signaling <- as.character(unique(df$interaction_name_2))
+    for (i in signaling) {
+      df.i <- df[df$interaction_name_2 == i, , drop = FALSE]
+      cell <- as.character(unique(df.i$group.names))
+      for (j in cell) {
+        df.i.j <- df.i[df.i$group.names == j, , drop = FALSE]
+        values <- df.i.j$prob
+        idx.max <- which(values == max(values, na.rm = T))
+        idx.min <- which(values == min(values, na.rm = T))
+        dataset.na <- c(df.i.j$dataset[is.na(values)], 
+                        setdiff(dataset.name[comparison], df.i.j$dataset))
+        if (length(idx.max) > 0) {
+          if (all(!(df.i.j$dataset[idx.max] %in% dataset.name[max.dataset]))) {
+            df.i.j$prob <- NA
+          }
+          else if (all((idx.max != idx.min) & !is.null(min.dataset))) {
+            if (all(!(df.i.j$dataset[idx.min] %in% dataset.name[min.dataset]))) {
+              df.i.j$prob <- NA
+            }
+            else if (length(dataset.na) > 0 & sum(!(dataset.name[min.dataset] %in% 
+                                                    dataset.na)) > 0) {
+              df.i.j$prob <- NA
+            }
+          }
+        }
+        df.i[df.i$group.names == j, "prob"] <- df.i.j$prob
+      }
+      df[df$interaction_name_2 == i, "prob"] <- df.i$prob
+    }
+  }
+  if (remove.isolate) {
+    df <- df[!is.na(df$prob), ]
+    line.on <- FALSE
+  }
+  if (nrow(df) == 0) {
+    stop("No interactions are detected. Please consider changing the cell groups for analysis. ")
+  }
+  if (!is.null(pairLR.use)) {
+    interaction_name_2.order <- intersect(pairLR.use$interaction_name, unique(df$interaction_name_2))
+    df$interaction_name_2 <- factor(df$interaction_name_2, 
+                                    levels = interaction_name_2.order)
+    df<-df[!is.na(df$interaction_name_2),]
+  }
+  df$source.target = droplevels(df$source.target, exclude = setdiff(levels(df$source.target), 
+                                                                    unique(df$source.target)))
+  if (sort.by.target & !sort.by.source) {
+    if (!is.null(targets.use)) {
+      df$target <- factor(df$target, levels = intersect(targets.use, 
+                                                        df$target))
+      df <- with(df, df[order(target, source), ])
+      source.target.order <- unique(as.character(df$source.target))
+      df$source.target <- factor(df$source.target, levels = source.target.order)
+    }
+  }
+  if (sort.by.source & !sort.by.target) {
+    if (!is.null(sources.use)) {
+      df$source <- factor(df$source, levels = intersect(sources.use, 
+                                                        df$source))
+      df <- with(df, df[order(source, target), ])
+      source.target.order <- unique(as.character(df$source.target))
+      df$source.target <- factor(df$source.target, levels = rev(source.target.order))
+    }
+  }
+  if (sort.by.source & sort.by.target) {
+    if (!is.null(sources.use)) {
+      df$source <- factor(df$source, levels = intersect(sources.use, 
+                                                        df$source))
+      if (!is.null(targets.use)) {
+        df$target <- factor(df$target, levels = intersect(targets.use, 
+                                                          df$target))
+      }
+      if (sort.by.source.priority) {
+        df <- with(df, df[order(source, target), ])
+      }
+      else {
+        df <- with(df, df[order(target, source), ])
+      }
+      source.target.order <- unique(as.character(df$source.target))
+      df$source.target <- factor(df$source.target, levels = rev(source.target.order))
+    }
+  }
+  
+  
+  ########
+  
+  if (fix.st) {
+    combo <- paste(tidyr::expand_grid(cell_types, cell_types, pairLR.use$interaction_name)$cell_types...1, "->", tidyr::expand_grid(cell_types, cell_types, pairLR.use$interaction_name)$cell_types...2)
+    add.st <- not(combo %in% df$source.target)
+    add.df <- data.frame(sample = "zero",
+                         age.group = dev.group,
+                         source = t(data.frame(strsplit(combo[add.st], " -> ")))[,1],
+                         target = t(data.frame(strsplit(combo[add.st], " -> ")))[,2],
+                         ligand = "zero",
+                         receptor = "zero",
+                         prob = NA,
+                         pval = 2.00,
+                         interaction_name = "zero",
+                         interaction_name_2 = tidyr::expand_grid(cell_types, cell_types, pairLR.use$interaction_name)$`pairLR.use$interaction_name`[add.st],
+                         pathway_name = pathway, 
+                         annotation = "zero", 
+                         evidence = "zero", 
+                         source.target = combo[add.st],
+                         prob.original = 0)
+    
+    rownames(add.df) <-NULL
+                         
+    df<-rbind(df, add.df)
+
+  }
+  
+  st.levels <- names(cellcolor)[(names(cellcolor) %in% df$source) | (names(cellcolor) %in% df$target)]
+  df$source <- factor(df$source, levels = st.levels)
+  df$target <- factor(df$target, levels = st.levels)
+  df <- df[order(df$source , df$target),]
+  df$source.target <- factor(df$source.target, levels = unique(df$source.target))
+  g <- ggplot(df, aes(x = interaction_name_2, y = source.target, 
+                      color = prob, size = pval)) + geom_point(pch = 16) + 
+    theme_linedraw() + theme(panel.grid.major = element_blank()) + 
+    theme(axis.text.x = element_text(angle = angle.x, hjust = hjust.x, 
+                                     vjust = vjust.x), axis.title.x = element_blank(), 
+          axis.title.y = element_blank()) + scale_x_discrete(position = "bottom") + scale_y_discrete(limits = rev)
+  values <- c(1, 2, 3)
+  names(values) <- c("p > 0.05", "0.01 < p < 0.05", "p < 0.01")
+  if (is.null(dot.size.max)) {
+    dot.size.max = max(df$pval)
+  }
+  if (is.null(dot.size.min)) {
+    dot.size.min = min(df$pval)
+  }
+  g <- g + scale_radius(range = c(dot.size.min, dot.size.max), 
+                        breaks = sort(unique(df$pval)), labels = names(values)[values %in% 
+                                                                                 sort(unique(df$pval))], name = "p-value")
+  if (min(df$prob, na.rm = T) != max(df$prob, na.rm = T)) {
+    g <- g + scale_colour_gradientn(colors = colorRampPalette(color.use)(99), 
+                                    na.value = "white", limits = c(quantile(df$prob, 
+                                                                            0, na.rm = T), quantile(df$prob, 1, na.rm = T)), 
+                                    breaks = c(quantile(df$prob, 0, na.rm = T), quantile(df$prob, 
+                                                                                         1, na.rm = T)), labels = c("min", "max")) + 
+      guides(color = guide_colourbar(barwidth = 0.5, title = "Commun. Prob."))
+  }
+  else {
+    g <- g + scale_colour_gradientn(colors = colorRampPalette(color.use)(99), 
+                                    na.value = "white") + guides(color = guide_colourbar(barwidth = 0.5, 
+                                                                                         title = "Commun. Prob."))
+  }
+  g <- g + theme(text = element_text(size = font.size), plot.title = element_text(size = font.size.title)) + 
+    theme(legend.title = element_text(size = 8), legend.text = element_text(size = 6))
+  if (grid.on) {
+    if (length(unique(df$source.target)) > 1) {
+      g <- g + geom_vline(xintercept = seq(1.5, length(unique(df$source.target)) - 
+                                             0.5, 1), lwd = 0.1, colour = color.grid)
+    }
+    if (length(unique(df$interaction_name_2)) > 1) {
+      g <- g + geom_hline(yintercept = seq(1.5, length(unique(df$interaction_name_2)) - 
+                                             0.5, 1), lwd = 0.1, colour = color.grid)
+    }
+  }
+  if (!is.null(title.name)) {
+    g <- g + ggtitle(title.name) + theme(plot.title = element_text(hjust = 0.5))
+  }
+  if (!is.null(comparison)) {
+    if (line.on) {
+      xintercept = seq(0.5 + length(dataset.name[comparison]), 
+                       length(group.names0) * length(dataset.name[comparison]), 
+                       by = length(dataset.name[comparison]))
+      g <- g + geom_vline(xintercept = xintercept, linetype = "dashed", 
+                          color = "grey60", size = line.size)
+    }
+    if (color.text.use) {
+      if (is.null(group)) {
+        group <- 1:length(comparison)
+        names(group) <- dataset.name[comparison]
+      }
+      if (is.null(color.text)) {
+        color <- ggPalette(length(unique(group)))
+      }
+      else {
+        color <- color.text
+      }
+      names(color) <- names(group[!duplicated(group)])
+      color <- color[group]
+      dataset.name.order <- levels(df$source.target)
+      dataset.name.order <- stringr::str_match(dataset.name.order, 
+                                               "\\(.*\\)")
+      dataset.name.order <- stringr::str_sub(dataset.name.order, 
+                                             2, stringr::str_length(dataset.name.order) - 
+                                               1)
+      xtick.color <- color[dataset.name.order]
+      g <- g + theme(axis.text.x = element_text(colour = xtick.color))
+    }
+  }
+  if (!show.legend) {
+    g <- g + theme(legend.position = "none")
+  }
+  if (return.data) {
+    return(list(communication = df, gg.obj = g))
+  }
+  else {
+    return(g)
+  }
+}
+
+```
+
+```{r}
+samples <- names(chat.list)
+net.list <- lapply(samples, function(sample)  {
+  df<-subsetCommunication(chat.list[[sample]], slot.name = "net", 
+                              sources.use = NULL, targets.use = NULL, 
+                              signaling = NULL, pairLR.use = NULL, 
+                              thresh = 0.05)
+  meta <- data.frame(sample = rep(sample,times = nrow(df)),
+                     age.group = rep(sampleMetadata[sample,"dev.group"],times = nrow(df)))
+  df <- cbind(meta,df)
+})
+
+net.df <- do.call("rbind", net.list)
+
+net.df$pathway_name <- gsub("-", "", net.df$pathway_name)
+```
+
+```{r}
+
+plotBubble <- function(mat, dev.group, cell_types, pathway,pairLR.use){
+  cell_types <- cell_types[cell_types %in% unique(mat$source[mat$age.group == dev.group])]
+  net.sub <- subset(mat, (age.group == dev.group) & ((source %in% cell_types) & (target %in% cell_types)) & (pathway_name == pathway))
+return(netVisual_bubblemat(mat =net.sub, remove.isolate = FALSE, pairLR.use =pairLR.use, cell_types = cell_types, fix.st = T, dev.group = dev.group))
+}
+
+```
+
+```{r}
+for (path in c(rownames(rankedPathways)[1:20], "NRXN","Glutamate")) {
+  print(path)
+  bbplots <- lapply(dev.list, function(dev) {
+    try(
+    if (dev %in% net.df$age.group[net.df$pathway_name == path] %>% unique()){
+      gg <- plotBubble(mat = net.df, dev.group = dev, cell_types = c("Oligo", "OPC", "COP", "Early Oligo","Transit Amplifying Cell", "Immune", "Astrocyte" ,"Mesenchymal", "PAX3 Neuron" ), 
+           pathway = path) + ggtitle(dev)
+      ggsave(plot=gg, paste0("output/figures/CellChat/bubblePlots/postnatal/",path,"_",dev,".pdf"), height = 10, width = 30)
+      return(gg)
+    }
+    )
+    return(nullGrob())
+
+
+  })
+  
+  pdf(paste0("output/figures/CellChat/bubblePlots/postnatal/",path,".pdf"),width = 35, height =5)
+  grid.arrange(bbplots[[2]],bbplots[[3]],bbplots[[4]], bbplots[[5]],nrow=1)
+  dev.off()
+}
+```
+
+```{r}
+source.targ.list <- list()
+LR.list <- list()
+for (dev in dev.group) {
+  source.targ.list <- c(source.targ.list, paste(net.df$source[net.df$age.group == dev], "->", net.df$target[net.df$age.group == dev]))
+  LR.list <- c(LR.list, net.df$interaction_name_2[net.df$age.group ==dev])
+}
+
+source.targ.list <- unique(source.targ.list)
+LR.list <- unique(LR.list)
+
+net.sub <- net.df[net.df$age.group == "Fetal",]
+
+
+
+net.sub.sub = net.sub[(grepl("GRIA",net.sub$interaction_name_2) | grepl("GRIK",net.sub$interaction_name_2) | grepl("GRIN",net.sub$interaction_name_2)) & 
+                        (grepl("SLC17A6",net.sub$interaction_name_2) | grepl("SLC1A1",net.sub$interaction_name_2) |
+                           grepl("SLC1A2",net.sub$interaction_name_2) | grepl("SLC1A3",net.sub$interaction_name_2)| grepl("GLS",net.sub$interaction_name_2)),]
+
+
+net.sub.sub = net.sub[grepl("SLC1A1",net.sub$interaction_name_2) |
+                           grepl("SLC1A2",net.sub$interaction_name_2) | grepl("SLC1A3",net.sub$interaction_name_2) ,]
+
+
+p <- netVisual_bubblemat(mat =net.sub.sub, remove.isolate = FALSE,return.data = T)
+
+sum(source.targ.list %in% as.character(p$communication$source.target))
+
+
+
+p$communication$color = ""
+for (s in unique(p$communication$source)) {
+  p$communication$color[p$communication$source == s] <- cellcolor[[s]]
+}
+p_y <-ggplot(p$communication) +
+  geom_col(aes(y = source, x = 1, fill = color), width = 1) +
+  scale_fill_identity() +
+  coord_cartesian(expand = FALSE) +
+  xlim(0,1)+
+  xlab("") +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(), 
+        panel.background = element_blank(), 
+        plot.background = element_blank())
+ligandcolor = c("gold", "black", "#DDDDE2","brown")
+names(ligandcolor) <- unique(p$communication$ligand)
+p$communication$color_2 = ""
+for (s in unique(p$communication$ligand)) {
+  p$communication$color_2[p$communication$ligand == s] <- ligandcolor[[s]]
+}
+p_x <-ggplot(p$communication) +
+  geom_col(aes(x = ligand, y = 1, fill = color_2), width = 1) +
+  scale_fill_identity() +
+  coord_cartesian(expand = FALSE) +
+  ylim(0,1)+
+  ylab("") +
+  theme(axis.text.y = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+        panel.background = element_blank(), 
+        plot.background = element_blank())
+
+
+# p$communication$color = ""
+# for (s in unique(p$communication$target)) {
+#   p$communication$color[p$communication$target == s] <- cellcolor[[s]]
+# }
+# 
+# p$communication$targ <- make.names(p$communication$target, unique = TRUE) %>% factor(levels = p$communication$targ)
+# 
+# 
+# p_y_2 <-ggplot(p$communication) +
+#   geom_col(aes(y = targ, x = 1, fill = color), width = 1)+
+#   scale_fill_identity() +
+#   coord_cartesian(expand = F) +
+#   theme(axis.text.x = element_blank(), 
+#         axis.title.x = element_blank(), 
+#         axis.ticks.x = element_blank(),
+#         axis.text.y = element_blank(), 
+#         axis.title.y = element_blank(), 
+#         axis.ticks.y = element_blank(),
+#         panel.background = element_blank(), 
+#         plot.background = element_blank())
+
+p_y  + p$gg.obj +plot_layout(widths = c(.01,1 ), height=c(1, 0.01))
+ggsave("infantt.pdf", height=8, width=12)
+#net.sub$sig <- case_when(net.sub$pval < 0.01 ~ "p < 0.01",
+#                         net.sub$pval < 0.05 & net.sub$pval >= 0.01 ~ "0.01 <= p < 0.05") %>% factor(levels = rev(c("p < 0.01", "0.01 <= p < 0.05")))
+net.sub.sub = net.sub[(grepl("GRIA",net.sub$interaction_name_2) | grepl("GRIK",net.sub$interaction_name_2) | grepl("GRIN",net.sub$interaction_name_2)) & 
+                        (grepl("SLC17A6",net.sub$interaction_name_2) | grepl("SLC1A1",net.sub$interaction_name_2) |
+                           grepl("SLC1A2",net.sub$interaction_name_2) | grepl("SLC1A3",net.sub$interaction_name_2)| grepl("GLS",net.sub$interaction_name_2)),]
+netVisual_bubblemat(mat =net.sub.sub, remove.isolate = FALSE,return.data = T)
+
+```
+
+```{r}
+for (dev.group in dev.list) {
+  dev = dev.group
+  cell_types <- cell_types[cell_types %in% unique(mat$source[mat$age.group == dev.group])]
+  net.sub <- subset(mat, (age.group == dev.group) & ((source %in% cell_types) & (target %in% cell_types)) & (pathway_name == path))
+  net.sub.sub = net.sub[grepl("SLC1A1",net.sub$interaction_name_2) |
+                           grepl("SLC1A2",net.sub$interaction_name_2) | grepl("SLC1A3",net.sub$interaction_name_2) ,]
+
+
+  p <- netVisual_bubblemat(mat =net.sub.sub, remove.isolate = FALSE,return.data = T)
+  p$communication$color = ""
+  for (s in unique(p$communication$source)) {
+    p$communication$color[p$communication$source == s] <- cellcolor[[s]]
+  }
+  p_y <-ggplot(p$communication) +
+    geom_col(aes(y = source, x = 1, fill = color), width = 1) +
+    scale_fill_identity() +
+    coord_cartesian(expand = FALSE) +
+    xlim(0,1)+
+    xlab("") +
+    theme(axis.text.x = element_blank(), 
+          axis.title.x = element_blank(), 
+          axis.ticks.x = element_blank(), 
+          panel.background = element_blank(), 
+          plot.background = element_blank())
+  p_y  + p$gg.obj +plot_layout(widths = c(.01,1 ), height=c(1, 0.01))
+ggsave(paste0(dev.group,".pdf"), height=8, width=12)
+
+}
+
+```
+
+```{r}
+save.image("wip.RData")
+load("wip.RData")
+```
+
+
+```{r}
+netAnalysis_contribution_mat <- function(mat, signaling, signaling.name = NULL, sources.use = NULL, 
+  targets.use = NULL, width = 0.1, vertex.receiver = NULL, 
+  thresh = 0.05, return.data = FALSE, x.rotation = 0, title = "Contribution of each L-R pair", 
+  font.size = 10, font.size.title = 10) 
+{
+  net <- mat
+  pairLR <- unique(net$interaction_name_2)
+  if (is.null(signaling.name)) {
+    signaling.name <- signaling
+  }
+  
+  pairLR.use.name <- pairLR
+  pairLR.name <- pairLR
+  pairLR <- pairLR
+  prob <- net$prob
+  pval <- net$pval
+  prob[pval > thresh] <- 0
+  if (!is.null(sources.use)) {
+    if (is.character(sources.use)) {
+      if (all(sources.use %in% dimnames(prob)[[1]])) {
+        sources.use <- match(sources.use, dimnames(prob)[[1]])
+      }
+      else {
+        stop("The input `sources.use` should be cell group names or a numerical vector!")
+      }
+    }
+    idx.t <- setdiff(1:nrow(prob), sources.use)
+    prob[idx.t, , ] <- 0
+  }
+  if (!is.null(targets.use)) {
+    if (is.character(targets.use)) {
+      if (all(targets.use %in% dimnames(prob)[[1]])) {
+        targets.use <- match(targets.use, dimnames(prob)[[2]])
+      }
+      else {
+        stop("The input `targets.use` should be cell group names or a numerical vector!")
+      }
+    }
+    idx.t <- setdiff(1:nrow(prob), targets.use)
+    prob[, idx.t, ] <- 0
+  }
+  if (length(pairLR.name) > 1) {
+    pairLR.name.use <- pairLR.name[apply(prob[pairLR.name], 
+      3, sum) != 0]
+  }
+  else {
+    pairLR.name.use <- pairLR.name[sum(prob[pairLR.name]) != 
+      0]
+  }
+  if (length(pairLR.name.use) == 0) {
+    stop(paste0("There is no significant communication of ", 
+      signaling.name))
+  }
+  else {
+    pairLR <- pairLR[pairLR.name.use, ]
+  }
+  prob <- prob[pairLR.name.use]
+  if (length(dim(prob)) == 2) {
+    prob <- replicate(1, prob, simplify = "array")
+    dimnames(prob)[3] <- pairLR.name.use
+  }
+  prob <- (prob - min(prob))/(max(prob) - min(prob))
+  if (is.null(vertex.receiver)) {
+    pSum <- apply(prob, 3, sum)
+    pSum.max <- sum(prob)
+    pSum <- pSum/pSum.max
+    pSum[is.na(pSum)] <- 0
+    y.lim <- max(pSum)
+    pair.name <- unlist(dimnames(prob)[3])
+    pair.name <- factor(pair.name, levels = unique(pair.name))
+    if (!is.null(pairLR.name.use)) {
+      pair.name <- pair.name.use[as.character(pair.name), 
+        1]
+      pair.name <- factor(pair.name, levels = unique(pair.name))
+    }
+    mat <- pSum
+    df1 <- data.frame(name = pair.name, contribution = mat)
+    if (nrow(df1) < 10) {
+      df2 <- data.frame(name = as.character(1:(10 - nrow(df1))), 
+        contribution = rep(0, 10 - nrow(df1)))
+      df <- rbind(df1, df2)
+    }
+    else {
+      df <- df1
+    }
+    df <- df[order(df$contribution, decreasing = TRUE), 
+      ]
+    df$name <- factor(df$name, levels = df$name[order(df$contribution, 
+      decreasing = TRUE)])
+    df1$name <- factor(df1$name, levels = df1$name[order(df1$contribution, 
+      decreasing = TRUE)])
+    gg <- ggplot(df, aes(x = name, y = contribution)) + 
+      geom_bar(stat = "identity", width = 0.7) + theme_classic() + 
+      theme(axis.text.y = element_text(angle = x.rotation, 
+        hjust = 1, size = font.size, colour = "black"), 
+        axis.text = element_text(size = font.size), 
+        axis.title.y = element_text(size = font.size), 
+        axis.text.x = element_blank(), axis.ticks = element_blank()) + 
+      xlab("") + ylab("Relative contribution") + ylim(0, 
+      y.lim) + coord_flip() + theme(legend.position = "none") + 
+      scale_x_discrete(limits = rev(levels(df$name)), 
+        labels = c(rep("", max(0, 10 - nlevels(df1$name))), 
+          rev(levels(df1$name))))
+    if (!is.null(title)) {
+      gg <- gg + ggtitle(title) + theme(plot.title = element_text(hjust = 0.5, 
+        size = font.size.title))
+    }
+    gg
+  }
+  else {
+    pair.name <- factor(unlist(dimnames(prob)[3]), levels = unique(unlist(dimnames(prob)[3])))
+    pSum <- apply(prob, 3, sum)
+    pSum.max <- sum(prob)
+    pSum <- pSum/pSum.max
+    pSum[is.na(pSum)] <- 0
+    y.lim <- max(pSum)
+    df <- data.frame(name = pair.name, contribution = pSum)
+    gg <- ggplot(df, aes(x = name, y = contribution)) + 
+      geom_bar(stat = "identity", width = 0.2) + theme_classic() + 
+      theme(axis.text = element_text(size = 10), axis.text.x = element_text(angle = x.rotation, 
+        hjust = 1, size = 8), axis.title.y = element_text(size = 10)) + 
+      xlab("") + ylab("Relative contribution") + ylim(0, 
+      y.lim) + ggtitle("All") + theme(plot.title = element_text(hjust = 0.5))
+    if (dim(prob)[3] > 1) {
+      pSum <- apply(prob[, vertex.receiver, ], 3, sum)
+    }
+    else {
+      pSum <- sum(prob[, vertex.receiver, ])
+    }
+    pSum <- pSum/pSum.max
+    pSum[is.na(pSum)] <- 0
+    df <- data.frame(name = pair.name, contribution = pSum)
+    gg1 <- ggplot(df, aes(x = name, y = contribution)) + 
+      geom_bar(stat = "identity", width = 0.2) + theme_classic() + 
+      theme(axis.text = element_text(size = 10), axis.text.x = element_text(angle = x.rotation, 
+        hjust = 1, size = 8), axis.title.y = element_text(size = 10)) + 
+      xlab("") + ylab("Relative contribution") + ylim(0, 
+      y.lim) + ggtitle("Hierarchy1") + theme(plot.title = element_text(hjust = 0.5))
+    if (dim(prob)[3] > 1) {
+      pSum <- apply(prob[, setdiff(1:dim(prob)[1], vertex.receiver), 
+        ], 3, sum)
+    }
+    else {
+      pSum <- sum(prob[, setdiff(1:dim(prob)[1], vertex.receiver), 
+        ])
+    }
+    pSum <- pSum/pSum.max
+    pSum[is.na(pSum)] <- 0
+    df <- data.frame(name = pair.name, contribution = pSum)
+    gg2 <- ggplot(df, aes(x = name, y = contribution)) + 
+      geom_bar(stat = "identity", width = 0.9) + theme_classic() + 
+      theme(axis.text = element_text(size = 10), axis.text.x = element_text(angle = x.rotation, 
+        hjust = 1, size = 8), axis.title.y = element_text(size = 10)) + 
+      xlab("") + ylab("Relative contribution") + ylim(0, 
+      y.lim) + ggtitle("Hierarchy2") + theme(plot.title = element_text(hjust = 0.5))
+    title <- cowplot::ggdraw() + cowplot::draw_label(paste0("Contribution of each signaling in ", 
+      signaling.name, " pathway"), fontface = "bold", 
+      size = 10)
+    gg.combined <- cowplot::plot_grid(gg, gg1, gg2, nrow = 1)
+    gg.combined <- cowplot::plot_grid(title, gg.combined, 
+      ncol = 1, rel_heights = c(0.1, 1))
+    gg <- gg.combined
+    gg
+  }
+  if (return.data) {
+    df <- subset(df, contribution > 0)
+    return(list(LR.contribution = df, gg.obj = gg))
+  }
+  else {
+    return(gg)
+  }
+}
+
+```
+
+
+```{r}
+ cell_types <- cell_types[cell_types %in% unique(mat$source[mat$age.group == dev.group])]
+net.sub <- subset(mat, (age.group == dev.group) & ((source %in% cell_types) & (target %in% cell_types)) & (pathway_name == path))
+L.groups <- list("EAATs" = c("Glu-SLC1A2_GLS", "Glu-SLC1A3_GLS", "Glu-SLC1A1_GLS", "Glu-SLC1A6_GLS", "Glu-SLC1A1_GLS2", "Glu-SLC1A2_GLS2"),
+                  "VGLUTs" = c("Glu-SLC17A6_GLS", "Glu-SLC17A7_GLS", "Glu-SLC17A6_GLS2", "Glu-SLC17A7_GLS2"),
+                  "NRXN" = c("Glu-NRXN1_CBLN1"))
+R.groups <- list(
+                  "AMPA" = c("GRIA1", "GRIA2", "GRIA3", "GRIA4"),
+                  "Kainate" = c("GRIK1", "GRIK2", "GRIK3", "GRIK1_GRIK4", "GRIK2_GRIK4", "GRIK3_GRIK4", 
+                             "GRIK1_GRIK5", "GRIK2_GRIK5", "GRIK3_GRIK5"),
+                  "NMDA" = c("GRIN1_GRIN2A", "GRIN1_GRIN2B", "GRIN1_GRIN2C", "GRIN1_GRIN2D"),
+                  "Metabotropic" = c("GRM1","GRM4","GRM3","GRM5", "GRM7","GRM8"),
+                  "Ionotropic Receptor D" = c("GRID2")
+                  )
+```
+
+```{r}
+dev.group =  "Fetal" ##### IMPORTANT
+cell_types = c("Oligo", "OPC", "COP", "Early Oligo","Transit Amplifying Cell", "Immune", "Astrocyte" ,"Mesenchymal", "PAX3 Neuron", "Neuron", "Glut Neuron")
+path = "Glutamate"
+
+colAnno_colors <- c(
+    "EAATs - AMPA" = "#E36A3C",
+    "EAATs - Kainate" = "#778899",
+    "EAATs - Metabotropic" = "#BDB76B",
+    "EAATs - NMDA" = "#DAA520",
+    "NRXN - Ionotropic Receptor D" = "#F5DEB3",
+    "VGLUTs - AMPA" = "#3CB371",
+    "VGLUTs - Kainate" = "black",
+    "VGLUTs - Metabotropic" = "#B8860B",
+    "VGLUTs - NMDA" = "#0077BE"
+  )
+probHeatmap <- function (net.df, dev.group, cell_types, path ="Glutamate", L.groups, R.groups, colAnno_colors, col_fun = NULL,fix.lr=T,fix.st=T, source.only = NULL) {
+  net.subset = subset(net.df,((source %in% cell_types) & (target %in% cell_types)) & 
+                        (pathway_name == path))
+  net.subset$L.group = ""
+  net.subset$R.group = ""
+  
+  for (l in names(L.groups)) {
+    net.subset$L.group = ifelse(net.subset$ligand %in% L.groups[[l]], yes = l, no = net.subset$L.group)
+  }
+  
+  for (r in names(R.groups)) {
+    net.subset$R.group = ifelse(net.subset$receptor %in% R.groups[[r]], yes = r, no = net.subset$R.group)
+  }
+  net.subset <- net.subset[(net.subset$L.group != "") & (net.subset$R.group != ""),]
+  
+  net.subset$LR.group <- paste(net.subset$L.group, "-", net.subset$R.group)
+  net.subset$ST.group <- paste(net.subset$source, "->", net.subset$target)
+  
+  
+
+  sub <- net.subset[net.subset$age.group == dev.group,]
+  pSum.df <- data.frame()#prob = 0, source = "blank", LR.group = "blank")
+    for (cell in unique(sub$ST.group)){
+      for (lr in unique(sub$LR.group)) {
+          df = data.frame(prob = sum(sub$prob[sub$LR.group == lr & sub$ST.group == cell]),
+                          ST.group = cell,
+                          LR.group = lr)
+          pSum.df =  rbind(pSum.df, df)
+      }
+    }
+
+ 
+  pSum.wide <- tidyr::pivot_wider(pSum.df, names_from = LR.group, values_from = prob, id_cols = ST.group)
+  ST.group <- pSum.wide$ST.group
+  temp <- data.frame(strsplit(ST.group, " -> ")) %>% t() %>% data.frame()
+  pSum.wide$source <- temp$X1
+  pSum.wide$target <- gsub(" -> ", "", temp$X2)
+  rm(temp)
+
+  
+  if (fix.st) {
+    combo <- unique(paste(tidyr::expand_grid(cell_types, cell_types)$cell_types...1, "->", tidyr::expand_grid(cell_types, cell_types)$cell_types...2))
+    add.st <- not(combo %in% pSum.wide$ST.group)
+    add.df <- data.frame(ST.group = combo[add.st])
+    for (c in colnames(pSum.wide)[not(colnames(pSum.wide) %in% c("ST.group", "source", "target"))]) {
+      add.df[,c] <- 0
+    }
+    add.df$source <- t(data.frame(strsplit(add.df$ST.group, " -> ")))[,1]
+    add.df$target <- t(data.frame(strsplit(add.df$ST.group, " -> ")))[,2]
+    pSum.wide<-rbind(pSum.wide, add.df)
+
+  }
+  
+  if (fix.lr) {
+    orig.len <- length(colnames(pSum.wide))
+    add.df <- data.frame(ST.group = pSum.wide$ST.group)
+    add.column <- names(colAnno_colors)[not(names(colAnno_colors) %in% colnames(pSum.wide))]
+    
+    if (length(add.column) > 0) {    
+      for (c in add.column) {
+      add.df[,c] <- 0
+    }
+    pSum.wide<-cbind(pSum.wide, add.df[,2:ncol(add.df)])
+    colnames(pSum.wide)[(orig.len+1):length(colnames(pSum.wide))]<- colnames(add.df)[2:ncol(add.df)]
+    }
+  }
+  st.levels <- names(cellcolor)[(names(cellcolor) %in% pSum.wide$source) | (names(cellcolor) %in% pSum.wide$target)]
+  pSum.wide$source <- factor(pSum.wide$source, levels = st.levels)
+  pSum.wide$target <- factor(pSum.wide$target, levels = st.levels)
+  pSum.wide <- pSum.wide[order(pSum.wide$source , pSum.wide$target),]
+  if (!is.null(source.only)) {
+   pSum.wide<- pSum.wide[pSum.wide$source == source.only,]
+  }
+  sources <- pSum.wide$source
+  targets <- pSum.wide$target
+  rownames(pSum.wide) <- pSum.wide$ST.group
+
+  pSum.wide$ST.group <- NULL
+  pSum.wide$source <- NULL
+  pSum.wide$target <- NULL
+  pSum.wide <- pSum.wide[,names(colAnno_colors)[names(colAnno_colors) %in% colnames(pSum.wide)]]
+  AnnoDF <- data.frame(colnames(pSum.wide))
+  colnames(AnnoDF) <- c("LR.groups")
+  AnnoDF$LR.groups <- factor(AnnoDF$LR.groups)
+  AnnoDF <- arrange(AnnoDF, LR.groups)
+  colAnno <- HeatmapAnnotation(
+    df=AnnoDF,
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12),
+    annotation_name_side = "left",
+    col= list(LR.groups = colAnno_colors
+    )
+  )
+  
+  AnnoDF2 <- data.frame(sources, targets)
+  colnames(AnnoDF2)[1] <- "source"
+  colnames(AnnoDF2)[2] <- "target"
+  
+  AnnoDF2$source= factor(AnnoDF2$source, levels=st.levels)
+  AnnoDF2$target= factor(AnnoDF2$target, levels=st.levels)
+  rowAnno <- HeatmapAnnotation(
+    df= AnnoDF2,
+    col= list(source=cellcolor[st.levels],
+              target=cellcolor[st.levels]),
+    which="row",
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12), show_legend = c(T,F))
+  
+
+  if (!is.null(col_fun))  {
+    return(Heatmap(as.matrix(pSum.wide), cluster_rows = F, cluster_columns = F, bottom_annotation = colAnno,
+          heatmap_legend_param = list(title="pSum"), show_column_names = F, show_row_names = F,left_annotation = rowAnno, col = col_fun))
+  }
+  return(Heatmap(as.matrix(pSum.wide), cluster_rows = F, cluster_columns = F, bottom_annotation = colAnno,
+          heatmap_legend_param = list(title="pSum"), show_column_names = F, show_row_names = F,left_annotation = rowAnno))
+  
+
+}
+```
+
+```{r Figure 6C}
+VGLUT_NRXN <- L.groups[c("VGLUTs", "NRXN")]
+EAATs <- L.groups["EAATs"]
+
+VGLUTcolors <- colAnno_colors[5:9]
+EAATcolors <- colAnno_colors[1:4]
+
+col = RColorBrewer::brewer.pal(11, name = "Spectral")
+col_fun <- colorRamp2(seq(from = 0, to =1, length.out=11), rev(col))
+vgluts.hm.list <- lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  probHeatmap(net.df = net.df, dev.group = dev, cell_types = cell_types, path = "Glutamate", L.groups= VGLUT_NRXN , 
+                R.groups = R.groups,colAnno_colors = VGLUTcolors, col_fun = col_fun, fix.st=T,fix.lr=T)# source.only = "PAX3 Neuron")
+})
+pdf("VGLUT_NRXN.pdf", width = 18, height = 2)
+draw(vgluts.hm.list[[1]] + vgluts.hm.list[[2]] + vgluts.hm.list[[3]] + vgluts.hm.list[[4]] + vgluts.hm.list[[5]])
+dev.off()
+
+col_fun <- colorRamp2(seq(from = 0, to =3, length.out=11), rev(col))
+eaats.hm.list <- lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  probHeatmap(net.df = net.df, dev.group = dev, cell_types = cell_types, path = "Glutamate", L.groups= EAATs , 
+                R.groups = R.groups,colAnno_colors = EAATcolors, col_fun = col_fun, fix.st=T,fix.lr=T)
+})
+
+
+pdf("EAATs.pdf", width = 18, height = 4)
+eaats.hm.list[[1]] + eaats.hm.list[[2]] + eaats.hm.list[[3]] + eaats.hm.list[[4]] + eaats.hm.list[[5]]
+dev.off()
+
+# for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+#   col_fun <- colorRamp2(seq(from = 0, to =1, length.out=11), rev(col))
+#   pdf(paste0(dev.group, "_VGLUT_NRXN.pdf"), width = 8, height = 6)
+#     hm1 <- probHeatmap(net.df = net.df, dev.group = dev.group, cell_types = cell_types, path = "Glutamate", L.groups= VGLUT_NRXN , 
+#                 R.groups = R.groups,colAnno_colors = VGLUTcolors, col_fun = col_fun)
+#     draw(hm1)
+#   dev.off()
+#   col_fun <- colorRamp2(c(0,  3), spectral(2))
+#   pdf(paste0(dev.group, "_EAATs.pdf"), width = 8, height = 6)
+#     hm2 <- probHeatmap(net.df = net.df, dev.group = dev.group, cell_types = cell_types, path = "Glutamate", L.groups= EAATs , 
+#                 R.groups = R.groups,colAnno_colors = EAATcolors, col_fun = col_fun) 
+#     draw(hm2)
+#   dev.off()
+#   
+#   pdf(paste0(dev.group, "_both_split.pdf"), width = 12, height = 6)
+#   draw(c(hm1,hm2),ht_gap = unit(1,'cm'))
+#   dev.off()
+#   col_fun <- colorRamp2(c(0,2), c("white", "red"))
+#   pdf(paste0(dev.group, "_both.pdf"), width = 8, height = 6)
+#     probHeatmap(net.df = net.df, dev.group = dev.group, cell_types = cell_types, path = "Glutamate", L.groups= L.groups , 
+#                 R.groups = R.groups,colAnno_colors = colAnno_colors, col_fun = col_fun) %>% draw()
+#   dev.off()
+# }
+```
+
+```{r}
+
+lr.use <- data.frame(interaction_name = c("NRXN1 - NLGN1","NRXN1 - NLGN3"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NRLGN", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NRLGN.pdf", height =8, width = 10.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN1 - LRRTM3","NRXN1 - LRRTM4"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN1_LRRTM", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_LRRTM.pdf", height =8, width = 10.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN3 - NLGN1","NRXN3 - NLGN3"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_NLGN", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN3_NLGN.pdf", height =8, width = 10.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN3 - LRRTM3","NRXN3 - LRRTM4"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM.pdf", height =8, width = 10.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN1 - NLGN1"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NLGN1.pdf", height =3.5, width = 7)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN1 - NLGN1"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NLGN1", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NLGN1.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN1 - NLGN3"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NLGN3", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_NLGN3.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN1 - LRRTM3"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN1_LRRTM3", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_LRRTM3.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN1 - LRRTM4"))
+                     #"NRXN1 - LRRTM4","NRXN1 - LRRTM3","NRXN1 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN1_LRRTM4", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN1_LRRTM4.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN3 - NLGN1"))
+                     #"NRXN3 - LRRTM4","NRXN3 - LRRTM3","NRXN3 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_NLGN1", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN3_NLGN1.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN3 - NLGN3"))
+                     #"NRXN3 - LRRTM4","NRXN3 - LRRTM3","NRXN3 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_NLGN3", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN3_NLGN3.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN3 - LRRTM3"))
+                     #"NRXN3 - LRRTM4","NRXN3 - LRRTM3","NRXN3 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM3", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM3.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+
+```{r}
+lr.use <- data.frame(interaction_name = c("NRXN3 - LRRTM4"))
+                     #"NRXN3 - LRRTM4","NRXN3 - LRRTM3","NRXN3 - LRRTM2", "NRXN3 - NLGN1", "NRXN3 - LRRTM4","NRXN3 - LRRTM3"))
+
+
+for (dev.group in c("Fetal", "Infant", "Child", "Adolescent", "Adult")) {
+  plotBubble(net.df, dev.group = dev.group, cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use)
+  ggsave(paste0("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM4", dev.group, ".pdf"), height =9, width = 8)
+}
+
+bl <- list(plotBubble(net.df, dev.group = "Fetal", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Infant", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Child", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adolescent", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use), plotBubble(net.df, dev.group = "Adult", cell_types = cell_types,pathway = "NRXN", pairLR.use = lr.use))
+pdf("output/figures/CellChat/bubblePlots/NRXN/NRXN3_LRRTM4.pdf", height =7, width = 3.5)
+grid.arrange(bl[[1]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[2]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[3]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[4]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()),bl[[5]]+NoLegend() + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()), nrow=1)
+dev.off()
+```
+
+```{r}
+col_fun <- colorRamp2(seq(from = 0, to =3, length.out=11), rev(col))
+eaats.hm.list.2 <- lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  probHeatmap(net.df = net.df, dev.group = dev, cell_types = c("OPC", "COP"), path = "Glutamate", L.groups= EAATs , 
+                R.groups = R.groups,colAnno_colors = EAATcolors, col_fun = col_fun,fix.st=F,fix.lr=T)
+})
+
+
+pdf("EAATs_OPC_COP.pdf", width = 18, height = 4)
+eaats.hm.list.2[[1]] + eaats.hm.list.2[[2]] + eaats.hm.list.2[[3]] + eaats.hm.list.2[[4]] + eaats.hm.list.2[[5]]
+dev.off()
+
+```
+
+```{r}
+  net.subset = subset(net.df,((source %in% cell_types) & (target %in% cell_types)) & 
+                        (pathway_name == path))
+  net.subset$L.group = ""
+  net.subset$R.group = ""
+  
+  for (l in names(L.groups)) {
+    net.subset$L.group = ifelse(net.subset$ligand %in% L.groups[[l]], yes = l, no = net.subset$L.group)
+  }
+  
+  for (r in names(R.groups)) {
+    net.subset$R.group = ifelse(net.subset$receptor %in% R.groups[[r]], yes = r, no = net.subset$R.group)
+  }
+  net.subset <- net.subset[(net.subset$L.group != "") & (net.subset$R.group != ""),]
+  
+  net.subset$LR.group <- paste(net.subset$L.group, "-", net.subset$R.group)
+  net.subset$ST.group <- paste(net.subset$source, "->", net.subset$target)
+
+  
+ggplot(data = net.subset, aes(x=factor(age.group, c("Fetal","Infant","Child","Adolescent","Adult")), y = prob, fill=age.group)) + geom_violin()+scale_fill_manual(values = Development)+facet_wrap(~source)    
+ggplot(data = net.subset, aes(x=factor(age.group, c("Fetal","Infant","Child","Adolescent","Adult")), y = prob, fill=age.group)) + geom_violin()+scale_fill_manual(values = Development)+facet_wrap(~ST.group)
+```
+
+```{r}
+cell_types = c("Oligo", "OPC", "COP", "Early Oligo","Transit Amplifying Cell", "Immune", "Astrocyte" ,"Mesenchymal", "PAX3 Neuron")
+  net.subset = subset(net.df,((source %in% cell_types) & (target %in% cell_types)) & 
+                        (pathway_name == path))
+  net.subset$L.group = ""
+  net.subset$R.group = ""
+  
+  for (l in names(L.groups)) {
+    net.subset$L.group = ifelse(net.subset$ligand %in% L.groups[[l]], yes = l, no = net.subset$L.group)
+  }
+  
+  for (r in names(R.groups)) {
+    net.subset$R.group = ifelse(net.subset$receptor %in% R.groups[[r]], yes = r, no = net.subset$R.group)
+  }
+  net.subset <- net.subset[(net.subset$L.group != "") & (net.subset$R.group != ""),]
+  
+  net.subset$LR.group <- paste(net.subset$L.group, "-", net.subset$R.group)
+  net.subset$ST.group <- paste(net.subset$source, "->", net.subset$target)
+```
+
+## Expression data
+
+```{r}
+cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+
+atlas <- readRDS("output/objects/atlas_final.RDS")
+atlas@assays$peaksMACS2 <- NULL
+atlas@assays$ATAC <- NULL
+```
+
+
+```{r}
+cop_opc<- subset(atlas, Cell_Type_General == "OPC" | Cell_Type_General == "COP")
+DefaultAssay(cop_opc) <- "RNA"
+Idents(cop_opc) <- cop_opc$Cell_Type_General
+plot.list<-lapply(features, function(f) {
+  p <- VlnPlot(cop_opc, features= f, group.by = "dev.group", split.by = "Cell_Type_General", assay = "RNA", slot="counts")+ scale_fill_manual(values= cellcolor)
+})
+
+do.call("grid.arrange", c(plot.list, ncol=5))
+
+```
+
+```{r}
+hm.list <-lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  sub <- subset(atlas, dev.group == dev)
+  
+  features <- c("SLC1A1","SLC2A2","SLC2A3","SLC2A6","GLS","NRXN1","NRXN3","NLGN1","NLGN3","NLGN4X","LRRTM3","LRRTM4","ADGRL1","ADGRL2","ADGRL3","GRM1","GRM2","GRM3","GRM4","GRM5","GRM6","GRM7","GRM8","GRIK1","GRIK2","GRIK3","GRIK4","GRIK5","GRIA1","GRIA2","GRIA3","GRIA4", "GRIN1","GRIN2A", "GRIN2B", "GRIN2C", "GRIN2D", "TENM1","TENM2","TENM3","TENM4", "FLRT3", "C1QL1","SLC17A7","SLC17A6","SLC17A8","GRID2")
+  
+  
+  names(features)[1:4] <- "Uptake"
+  names(features)[5] <- "Synthesis"
+  names(features)[6:7] <- "Pre-Synaptic Strengthening"
+  names(features)[8:15] <- "Post-Synaptic Strengthening"
+  names(features)[16:37] <- "Receptors"
+  names(features)[38:41] <- "Pre-Synaptic Strengthening"
+  names(features)[38:42] <- "Pre-Synaptic Strengthening"
+  names(features)[43] <- "Post-Synaptic Strengthening"
+  names(features)[44:46] <- "Synthesis"
+  names(features)[47] <- "Receptors"
+  
+  features <- features[names(features) != "Receptors"]
+  ClusterAvg_Glut <- AverageExpression(
+    sub,
+    assays = "RNA",
+    features = features,
+    return.seurat = FALSE,
+    verbose = TRUE,
+    group.by = "Cell_Type_General",
+    layer = "counts"
+  )
+   
+  
+  
+  
+  
+  colAnno_colors <- c("maroon", "khaki", "green", "darkgreen")#, "violet")
+  names(colAnno_colors) <- unique(names(features))
+   
+  df <- ClusterAvg_Glut$RNA %>% data.frame
+  colnames(df) <- gsub("\\."," ", colnames(df))
+  df[,names(cellcolor)[!(names(cellcolor) %in% colnames(df))]] <- matrix(0, dim(df)[1],length(names(cellcolor)[!(names(cellcolor) %in% colnames(df))]))
+  df <- as.matrix(df)
+  #mat_scaled = t(apply(df, 1, scale))
+  mat_scaled <- df
+  colnames(mat_scaled) <- colnames(df)
+  
+  mat_scaled <- t(mat_scaled)
+  mat_scaled <- mat_scaled[names(cellcolor),]
+  
+  
+  AnnoDF <- data.frame(colnames(mat_scaled), names(features))
+  colnames(AnnoDF) <- c("genes", "groups")
+  
+  AnnoDF$groups <- factor(AnnoDF$groups,levels=unique(AnnoDF$groups))
+  AnnoDF <- AnnoDF[order(AnnoDF$groups),]
+  mat_scaled <- mat_scaled[,AnnoDF$genes]
+  
+  AnnoDF$genes<-NULL
+  colAnno <- HeatmapAnnotation(
+    df=AnnoDF,
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12),
+    annotation_name_side = "left",
+    col= list(groups = colAnno_colors
+    )
+  )
+  
+  
+  AnnoDF2 <- data.frame(Cell_Type=rownames(mat_scaled))
+  
+  
+  AnnoDF2$Cell_Type= factor(AnnoDF2$Cell_Type, levels=names(cellcolor))
+  
+  rowAnno <- HeatmapAnnotation(
+    df= AnnoDF2,
+    col= list(Cell_Type= cellcolor),
+    which="row",
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12), show_legend = c(T,F))
+  
+  col<-RColorBrewer::brewer.pal(11, name = "Spectral")
+  #col_fun <- colorRamp2(seq(from = -2, to =4, length.out=11), rev(col))   
+  col_fun <- colorRamp2(seq(from = 0, to =20, length.out=11), rev(col))
+  if (dev == "Fetal") {
+    hm <-Heatmap(
+     mat_scaled, cluster_columns=F,cluster_rows =F
+                       , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+    use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left",column_split = AnnoDF$groups)
+      return(hm)
+  }
+  
+  hm <-Heatmap(
+    mat_scaled, cluster_columns=F,cluster_rows =F
+                         , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+  use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left", show_heatmap_legend = F, column_split = AnnoDF$groups)
+  return(hm)
+})
+
+
+hm.list.r <-lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  sub <- subset(atlas, dev.group == dev)
+  
+  features <- c("SLC1A1","SLC2A2","SLC2A3","SLC2A6","GLS","NRXN1","NRXN3","NLGN1","NLGN3","NLGN4X","LRRTM3","LRRTM4","ADGRL1","ADGRL2","ADGRL3","GRM1","GRM2","GRM3","GRM4","GRM5","GRM6","GRM7","GRM8","GRIK1","GRIK2","GRIK3","GRIK4","GRIK5","GRIA1","GRIA2","GRIA3","GRIA4", "GRIN1","GRIN2A", "GRIN2B", "GRIN2C", "GRIN2D", "TENM1","TENM2","TENM3","TENM4", "FLRT3", "C1QL1","SLC17A7","SLC17A6","SLC17A8","GRID2")
+  
+  
+  names(features)[1:4] <- "Uptake"
+  names(features)[5] <- "Synthesis"
+  names(features)[6:7] <- "Pre-Synaptic Strengthening"
+  names(features)[8:15] <- "Post-Synaptic Strengthening"
+  names(features)[16:37] <- "Receptors"
+  names(features)[38:41] <- "Pre-Synaptic Strengthening"
+  names(features)[38:42] <- "Pre-Synaptic Strengthening"
+  names(features)[43] <- "Post-Synaptic Strengthening"
+  names(features)[44:46] <- "Synthesis"
+  names(features)[47] <- "Receptors"
+  
+  features <- features[names(features) == "Receptors"]
+  ClusterAvg_Glut <- AverageExpression(
+    sub,
+    assays = "RNA",
+    features = features,
+    return.seurat = FALSE,
+    verbose = TRUE,
+    group.by = "Cell_Type_General",
+    layer = "counts"
+  )
+   
+  names(features)[1:8] <- "Metabotropic"
+  names(features)[9:13] <- "Kainate"
+  names(features)[14:17] <- "AMPA"
+  names(features)[18:22] <- "NMDA"
+  names(features)[23] <- "GRID"
+  
+  colAnno_colors <- c("GRID" = "#F5DEB3",
+    "AMPA" = "#3CB371",
+    "Kainate" = "black",
+    "Metabotropic" = "#B8860B",
+    "NMDA" = "#0077BE")
+  
+  df <- ClusterAvg_Glut$RNA %>% data.frame
+  colnames(df) <- gsub("\\."," ", colnames(df))
+  df[,names(cellcolor)[!(names(cellcolor) %in% colnames(df))]] <- matrix(0, dim(df)[1],length(names(cellcolor)[!(names(cellcolor) %in% colnames(df))]))
+  df <- as.matrix(df)
+  #mat_scaled = t(apply(df, 1, scale))
+  mat_scaled <- df
+  colnames(mat_scaled) <- colnames(df)
+  
+  mat_scaled <- t(mat_scaled)
+  mat_scaled <- mat_scaled[names(cellcolor),]
+  
+  
+  AnnoDF <- data.frame(colnames(mat_scaled), names(features))
+  colnames(AnnoDF) <- c("genes", "groups")
+  
+  AnnoDF$groups <- factor(AnnoDF$groups,levels=c("GRID", "AMPA", "Kainate", "Metabotropic", "NMDA"))
+  AnnoDF <- AnnoDF[order(AnnoDF$groups),]
+  mat_scaled <- mat_scaled[,AnnoDF$genes]
+  
+  AnnoDF$genes<-NULL
+  colAnno <- HeatmapAnnotation(
+    df=AnnoDF,
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12),
+    annotation_name_side = "left",
+    col= list(groups = colAnno_colors
+    )
+  )
+  
+  
+  AnnoDF2 <- data.frame(Cell_Type=rownames(mat_scaled))
+  
+  
+  AnnoDF2$Cell_Type= factor(AnnoDF2$Cell_Type, levels=names(cellcolor))
+  
+  rowAnno <- HeatmapAnnotation(
+    df= AnnoDF2,
+    col= list(Cell_Type= cellcolor),
+    which="row",
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12), show_legend = c(T,F))
+  
+  col<-RColorBrewer::brewer.pal(11, name = "Spectral")
+  #col_fun <- colorRamp2(seq(from = -2, to =4, length.out=11), rev(col))
+  col_fun <- colorRamp2(seq(from = 0, to =20, length.out=11), rev(col))
+  if (dev == "Fetal") {
+    hm <-Heatmap(
+     mat_scaled, cluster_columns=F,cluster_rows =F
+                       , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+    use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left",column_split = AnnoDF$groups)
+      return(hm)
+  }
+  
+  hm <-Heatmap(
+    mat_scaled, cluster_columns=F,cluster_rows =F
+                         , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+  use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left", show_heatmap_legend = F, column_split = AnnoDF$groups)
+  return(hm)
+})
+
+```
+
+```{r}
+draw(hm.list[[1]]+ hm.list[[2]]+hm.list[[3]]+hm.list[[4]]+hm.list[[5]])
+```
+```{r figure 6D1}
+draw(hm.list.r[[1]]+ hm.list.r[[2]]+hm.list.r[[3]]+hm.list.r[[4]]+hm.list.r[[5]])
+```
+
+```{r}
+# library(cowplot)
+# p1 = grid.grabExpr(draw(hm.list[[1]]))
+# p2 = grid.grabExpr(draw(hm.list.r[[1]]))
+# plot_grid(p1,p2, nrow = 2)
+```
+
+```{r}
+hm.list <-lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  sub <- subset(atlas, dev.group == dev)
+  
+  features <- c("SLC1A1","SLC2A2","SLC2A3","SLC2A6","GLS","NRXN1","NRXN3","NLGN1","NLGN3","NLGN4X","LRRTM3","LRRTM4","ADGRL1","ADGRL2","ADGRL3","GRM1","GRM2","GRM3","GRM4","GRM5","GRM6","GRM7","GRM8","GRIK1","GRIK2","GRIK3","GRIK4","GRIK5","GRIA1","GRIA2","GRIA3","GRIA4", "GRIN1","GRIN2A", "GRIN2B", "GRIN2C", "GRIN2D", "TENM1","TENM2","TENM3","TENM4", "FLRT3", "C1QL1","SLC17A7","SLC17A6","SLC17A8","GRID2")
+  
+  
+  names(features)[1:4] <- "Uptake"
+  names(features)[5] <- "Synthesis"
+  names(features)[6:7] <- "Pre-Synaptic Strengthening"
+  names(features)[8:15] <- "Post-Synaptic Strengthening"
+  names(features)[16:37] <- "Receptors"
+  names(features)[38:41] <- "Pre-Synaptic Strengthening"
+  names(features)[38:42] <- "Pre-Synaptic Strengthening"
+  names(features)[43] <- "Post-Synaptic Strengthening"
+  names(features)[44:46] <- "Synthesis"
+  names(features)[47] <- "Receptors"
+  
+  features <- features[names(features) != "Receptors"]
+  features <- features[names(features) != "Uptake"]
+  features <- features[names(features) != "Synthesis"]
+  ClusterAvg_Glut <- AverageExpression(
+    sub,
+    assays = "RNA",
+    features = features,
+    return.seurat = FALSE,
+    verbose = TRUE,
+    group.by = "Cell_Type_General",
+    layer = "counts"
+  )
+   
+  
+  
+  
+  
+  colAnno_colors <- c("green", "darkgreen")#, "violet") "maroon", "khaki"
+  names(colAnno_colors) <- unique(names(features))
+   
+  df <- ClusterAvg_Glut$RNA %>% data.frame
+  colnames(df) <- gsub("\\."," ", colnames(df))
+  df[,names(cellcolor)[!(names(cellcolor) %in% colnames(df))]] <- matrix(0, dim(df)[1],length(names(cellcolor)[!(names(cellcolor) %in% colnames(df))]))
+  
+  df<-df[, colnames(df)[!(colnames(df) %in% c("Mesenchymal","Immune","Endothelial","Erythroblast","Pericyte"))]]
+  
+  df <- as.matrix(df)
+  mat_scaled = t(apply(df, 1, scale))
+  #mat_scaled <- df
+  colnames(mat_scaled) <- colnames(df)
+  
+  mat_scaled <- t(mat_scaled)
+  mat_scaled <- mat_scaled[names(cellcolor)[!(names(cellcolor) %in% c("Mesenchymal","Immune","Endothelial","Erythroblast","Pericyte"))],]
+  
+  
+  AnnoDF <- data.frame(colnames(mat_scaled), names(features))
+  colnames(AnnoDF) <- c("genes", "groups")
+  
+  AnnoDF$groups <- factor(AnnoDF$groups,levels=unique(AnnoDF$groups))
+  AnnoDF <- AnnoDF[order(AnnoDF$groups),]
+  mat_scaled <- mat_scaled[,AnnoDF$genes]
+  
+  AnnoDF$genes<-NULL
+  colAnno <- HeatmapAnnotation(
+    df=AnnoDF,
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12),
+    annotation_name_side = "left",
+    col= list(groups = colAnno_colors
+    )
+  )
+  
+  
+  AnnoDF2 <- data.frame(Cell_Type=rownames(mat_scaled))
+  
+  
+  AnnoDF2$Cell_Type= factor(AnnoDF2$Cell_Type, levels=names(cellcolor))
+  
+  rowAnno <- HeatmapAnnotation(
+    df= AnnoDF2,
+    col= list(Cell_Type= cellcolor),
+    which="row",
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12), show_legend = c(T,F))
+ message(round(max(mat_scaled)))
+  col<-RColorBrewer::brewer.pal(11, name = "Spectral")
+  col_fun <- colorRamp2(seq(from = -2, to =4, length.out=11), rev(col))   
+  #col_fun <- colorRamp2(seq(from = 0, to = 70, length.out=11), rev(col))
+  if (dev == "Fetal") {
+    hm <-Heatmap(
+     mat_scaled, cluster_columns=F,cluster_rows =F
+                       , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+    use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left",column_split = AnnoDF$groups)
+      return(hm)
+  }
+  
+  hm <-Heatmap(
+    mat_scaled, cluster_columns=F,cluster_rows =F
+                         , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+  use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left", show_heatmap_legend = F, column_split = AnnoDF$groups)
+  return(hm)
+})
+
+
+hm.list.r <-lapply(c("Fetal", "Infant", "Child", "Adolescent", "Adult"), function(dev) {
+  sub <- subset(atlas, dev.group == dev)
+  
+  features <- c("SLC1A1","SLC2A2","SLC2A3","SLC2A6","GLS","NRXN1","NRXN3","NLGN1","NLGN3","NLGN4X","LRRTM3","LRRTM4","ADGRL1","ADGRL2","ADGRL3","GRM1","GRM2","GRM3","GRM4","GRM5","GRM6","GRM7","GRM8","GRIK1","GRIK2","GRIK3","GRIK4","GRIK5","GRIA1","GRIA2","GRIA3","GRIA4", "GRIN1","GRIN2A", "GRIN2B", "GRIN2C", "GRIN2D", "TENM1","TENM2","TENM3","TENM4", "FLRT3", "C1QL1","SLC17A7","SLC17A6","SLC17A8","GRID2")
+  
+  
+  names(features)[1:4] <- "Uptake"
+  names(features)[5] <- "Synthesis"
+  names(features)[6:7] <- "Pre-Synaptic Strengthening"
+  names(features)[8:15] <- "Post-Synaptic Strengthening"
+  names(features)[16:37] <- "Receptors"
+  names(features)[38:41] <- "Pre-Synaptic Strengthening"
+  names(features)[38:42] <- "Pre-Synaptic Strengthening"
+  names(features)[43] <- "Post-Synaptic Strengthening"
+  names(features)[44:46] <- "Synthesis"
+  names(features)[47] <- "Receptors"
+  
+  features <- features[names(features) == "Receptors"]
+  ClusterAvg_Glut <- AverageExpression(
+    sub,
+    assays = "RNA",
+    features = features,
+    return.seurat = FALSE,
+    verbose = TRUE,
+    group.by = "Cell_Type_General",
+    layer = "counts"
+  )
+   
+  names(features)[1:8] <- "Metabotropic"
+  names(features)[9:13] <- "Kainate"
+  names(features)[14:17] <- "AMPA"
+  names(features)[18:22] <- "NMDA"
+  names(features)[23] <- "GRID"
+  
+  colAnno_colors <- c("GRID" = "#F5DEB3",
+    "AMPA" = "#3CB371",
+    "Kainate" = "black",
+    "Metabotropic" = "#B8860B",
+    "NMDA" = "#0077BE")
+  
+  df <- ClusterAvg_Glut$RNA %>% data.frame
+  colnames(df) <- gsub("\\."," ", colnames(df))
+  df[,names(cellcolor)[!(names(cellcolor) %in% colnames(df))]] <- matrix(0, dim(df)[1],length(names(cellcolor)[!(names(cellcolor) %in% colnames(df))]))
+  df <- as.matrix(df)
+  mat_scaled = t(apply(df, 1, scale))
+  #mat_scaled <- df
+  colnames(mat_scaled) <- colnames(df)
+  
+  mat_scaled <- t(mat_scaled)
+  mat_scaled <- mat_scaled[names(cellcolor),]
+  
+  
+  AnnoDF <- data.frame(colnames(mat_scaled), names(features))
+  colnames(AnnoDF) <- c("genes", "groups")
+  
+  AnnoDF$groups <- factor(AnnoDF$groups,levels=c("GRID", "AMPA", "Kainate", "Metabotropic", "NMDA"))
+  AnnoDF <- AnnoDF[order(AnnoDF$groups),]
+  mat_scaled <- mat_scaled[,AnnoDF$genes]
+  
+  AnnoDF$genes<-NULL
+  colAnno <- HeatmapAnnotation(
+    df=AnnoDF,
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12),
+    annotation_name_side = "left",
+    col= list(groups = colAnno_colors
+    )
+  )
+  
+  
+  AnnoDF2 <- data.frame(Cell_Type=rownames(mat_scaled))
+  
+  
+  AnnoDF2$Cell_Type= factor(AnnoDF2$Cell_Type, levels=names(cellcolor))
+  
+  rowAnno <- HeatmapAnnotation(
+    df= AnnoDF2,
+    col= list(Cell_Type= cellcolor),
+    which="row",
+    show_annotation_name = F,
+    annotation_name_gp = gpar(fontsize = 12), show_legend = c(T,F))
+  
+  col<-RColorBrewer::brewer.pal(11, name = "Spectral")
+  col_fun <- colorRamp2(seq(from = -2, to =4, length.out=11), rev(col))
+  #col_fun <- colorRamp2(seq(from = 0, to =20, length.out=11), rev(col))
+  if (dev == "Fetal") {
+    hm <-Heatmap(
+     mat_scaled, cluster_columns=F,cluster_rows =F
+                       , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+    use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left",column_split = AnnoDF$groups)
+      return(hm)
+  }
+  
+  hm <-Heatmap(
+    mat_scaled, cluster_columns=F,cluster_rows =F
+                         , row_names_gp = gpar(fontsize = 5),bottom_annotation = colAnno, show_column_names = T,
+  use_raster = F, left_annotation = rowAnno, col = col_fun,row_names_side = "left", show_heatmap_legend = F, column_split = AnnoDF$groups)
+  return(hm)
+})
+```
+
+```{r Figure 6D2}
+draw(hm.list[[1]]+ hm.list[[2]]+hm.list[[3]]+hm.list[[4]]+hm.list[[5]])
+```

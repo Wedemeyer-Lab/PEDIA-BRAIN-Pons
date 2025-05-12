@@ -1,0 +1,239 @@
+---
+title: "Supplemental_Figuer_3_Analysis"
+author: "Sheldon Ding"
+date: "2025-03-21"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(openxlsx) 
+library(harmony)
+library(clustree)
+library(rGREAT)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(AnnotationHub)
+library(TFBSTools)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(IRanges)
+library(Biostrings)
+library(openxlsx)
+library(biomaRt)
+library(DESeq2)
+library(grid)
+library(SeuratWrappers)
+library(monocle3)
+library(EnhancedVolcano)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+OPC_Oligo <- readRDS("output/objects/OPC_Oligo.RDS")
+OPC_harmony <- readRDS("output/objects/OPC_harmony.RDS")
+```
+
+```{r set color for cell type and age}
+#cell type
+OPC_subcluster_color <- c("RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0")
+
+#age
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+```
+
+
+###Supplemental Figure 3
+```{r Supplemental Figure 3A}
+#read in TOP10 subcluster DEG and canonical markers genes in each oligodendrocyte lineage sub-cluster 
+genes <- read.xlsx("/igm/projects/HD-BAT_Wedemeyer/atlas_formatted/PEDIA-BRAIN-Pons/output/tables/Oligo_OPC_DotPlot_DEG.xlsx")
+
+#to plot TOP10 subcluster DEG and canonical markers genes in each oligodendrocyte lineage sub-cluster on DotPlot
+DotPlot(subset, features = unique(genes$gene))+ theme(axis.title.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=0.5)) + coord_flip()
+```
+
+```{r Supplemental Figure 3B}
+#set active identity to SCT_snn_res.0.6
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$SCT_snn_res.0.6)
+
+##to plot cluster on RNA DimPlot
+DimPlot(OPC_harmony, label = T, reduction = "umap.rna")
+```
+
+```{r Supplemental Figure 3C}
+#to plot differentially expressed canonical markers 
+FeaturePlot(OPC_harmony, features = c("OLIG1", "SOX2","YAP1","VIM","TCF7L2","PDGFRA","GPR17","SOX10","MYRF"), keep.scale = "all", reduction = "umap.rna")
+```
+
+```{r Supplemental Figure 3D}
+##compute the GC content for each peak
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony <- RegionStats(OPC_harmony, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+#link peaks to genes
+OPC_harmony <- LinkPeaks(
+  object = OPC_harmony,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  genes.use = "ALDH1L1")
+
+##to visualize "ALDH1L1" open peaks, RNA expression and links on CoveragePlot
+CoveragePlot(
+  object = OPC_harmony,
+  region = "ALDH1L1",
+  features = "ALDH1L1",
+  expression.assay = "RNA",
+  extend.upstream = 20000,
+  extend.downstream = 20000) & scale_fill_manual(values = OPC_subcluster_color) & theme(
+  panel.background = element_rect(fill = "#D3D3D3",
+                                colour = "#D3D3D3"))
+```
+
+```{r Supplemental Figure 3E}
+###calculate the DAP in each subcluster
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$Subcluster)
+OPC_harmony_Subcluster_DAP <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each subcluster and make a list
+OPC_harmony_Subcluster_DAP_list <- list(RG-like_OPC_DAP,OPC_DAP,COP_DAP,Astrocyte-like_OPC_DAP)
+
+#run the rGreat analysis
+OPC_harmony_Subcluster_DAP_list <- lapply(OPC_harmony_Subcluster_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OPC_harmony_Subcluster_DAP_list <- lapply(OPC_harmony_Subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#rGreat analysis for computing the differenet pathway based on DAP
+r.OPC_harmony_Subcluster_DAP_list <- rGREAT::great(g.OPC_harmony_Subcluster_DAP_list,
+                        gene_sets = "msigdb:C5:GO:BP",
+                        tss_source = "hg38"
+                        )
+ETable <- rGREAT::getEnrichmentTable(r.OPC_harmony_Subcluster_DAP_list)
+
+#get the different pathway of each subcluster from ETable
+GO <- list(ETable.cluster.list[[1]],ETable.cluster.list[[2]],ETable.cluster.list[[3]],ETable.cluster.list[[4]])
+list <- c("RG-like OPC","OPC","COP","Astrocyte-like OPC")
+
+#make annotation dataframe and DF for heatmap
+AnnoDF <- data.frame(c("RG-like OPC","OPC","COP","Astrocyte-like OPC"))
+colnames(AnnoDF) <- c("Subcluster")
+AnnoDF$Subcluster <- factor(AnnoDF$Subcluster, levels = c("RG-like OPC","OPC","COP","Astrocyte-like OPC"))
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Subcluster = c("RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0")))
+
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+df <- GO[[x]]
+df <- df[df$p_value < 0.05,]
+df <- df[order(df$p_value, decreasing = FALSE),]
+desc <- df$id
+desc <- desc[1:5]
+return(desc)
+}
+)
+
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <-lapply(list, function(great){
+  Desc.df[great] <- 0
+  great.Desc.df <- data.frame(GO[[great]])
+  sig <-data.frame(great.Desc.df[great.Desc.df$p_value < 0.05,]) 
+  sig <- sig[order(sig$p_value, decreasing = F),]
+  Desc.df[sig$id,great]<- great.Desc.df[great.Desc.df$id %in% sig$id, "fold_enrichment"]
+  Desc.df <- Desc.df[unique(Desc),] 
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  return(Desc.df)
+  })
+df2 <- data.frame(cols)
+matrix_GO <- as.matrix(df2)
+colnames(matrix_GO) <- colnames(df2)
+rownames(matrix_GO) <- unique(Desc)
+matrix_GO = t(apply(df2, 1, scale))
+
+#to draw GO heatmap
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE
+                       , row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_column_names = TRUE)
+draw(plot_GO)
+```
+
+```{r Supplemental Figure 3F}
+#read in top 10 DAP across ages in OPC
+OPC_dev <- read.xlsx("output/tables/OPC_Age_DAP.xlsx")
+
+#annotate chromosomes 19 to show
+coordinate_to_show <- c("chr19-38849855-38850794","chr19-14136425-14137351","chr19-14117512-14118451","chr1-23344019-23344936","chr19-14006073-14007033","chr19-13951888-13952796", "chr19-13794795-13795728", "chr19-39833431-39834458", "chr19-38899340-38900285","chr19-38930212-38931142","chr19-39970558-39971477", "chr19-56838773-56840149", "chr19-14090514-14091485")
+
+#create expression level of top 10 DAP across ages in OPC
+genes.of.interest <- OPC_dev$gene
+goi.trunc <- genes.of.interest[genes.of.interest %in% rownames(OPC_harmony@assays$ATAC@counts)]
+counts <-OPC_harmony@assays$ATAC@counts[goi.trunc,] %>% as.matrix()
+mat_scaled <- t(apply(counts,1, scale))
+colnames(mat_scaled) <- colnames(counts)
+ha = rowAnnotation(foo = anno_mark(at = which(rownames(mat_scaled) %in% coordinate_to_show),
+                                    labels = rownames(mat_scaled)[rownames(mat_scaled)%in%coordinate_to_show]))
+
+#create annotation DF
+AnnoDF <- data.frame(OPC_harmony@meta.data[colnames(mat_scaled),c(45,10)])
+colnames(AnnoDF) <- c("Subtype","Age")
+AnnoDF$Subtype <- factor(AnnoDF$Subtype, levels = c("RG-like OPC", "OPC" ,"COP","Astrocyte-like OPC"))
+AnnoDF$Age <- factor(AnnoDF$Age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+AnnoDF <- AnnoDF[order(AnnoDF$Subtype, AnnoDF$Age),]
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Subtype = c("RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0")
+             ,Age = c("Fetal" =  "#fafa6e", "Infant" = "#c5ec71", "Child" ="#94dc79",
+             "Adolescent" = "#68c981","Adult" = "#42b588")))
+mat_scaled <- mat_scaled[,rownames(AnnoDF)]
+
+#to draw GO heatmap
+plot_GO <- Heatmap(mat_scaled, cluster_columns=F,cluster_rows =FALSE
+                       , row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_column_names = TRUE)
+draw(plot_GO)
+```
+
+
+
+
+
+
+
+
+
+
+
+

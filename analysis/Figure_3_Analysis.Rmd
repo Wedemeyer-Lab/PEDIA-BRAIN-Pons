@@ -1,0 +1,182 @@
+---
+title: "Figure_3_Analysis"
+author: "Sheldon Ding"
+date: "2025-03-21"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(clustree)
+library(GenomicRanges)
+library(biomaRt)
+library(msigdbr)
+library(clusterProfiler)
+library(AnnotationHub)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r set color for cell type and age}
+#cell type
+cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Motor Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+
+#age
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+```
+
+
+###Figure 3
+```{r Figure 3A}
+##the schematic of proposed developmental trajectories for fetal and postnatal oligodendrocyte generation was made on BioRender
+```
+
+```{r Figure 3B}
+##subset OPC and OL
+OPC_Oligo <- subset(sobj, idents = c("Fetal COP","OPC", "COP", "Early OL", "OL"))
+
+##to plot expression of canonical markers across different cell types
+DefaultAssay(OPC_Oligo) <- "RNA"
+RidgePlot(OPC_Oligo, features = c("SOX2","YAP1","PDGFRA","OLIG1","OLIG2","SOX10","BCAS1","TCF7L2","MYRF","PLP1","RBFOX1", "CNP"), stack = T, fill.by = "ident") + scale_y_discrete(limits=rev(c("Fetal COP", "OPC", "COP","Early Oligo", "Oligo"))) + scale_fill_manual(values = c("OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early Oligo" = "#3998f5","Oligo" = "#1F51FF"))
+```
+
+```{r Figure 3C}
+##to plot nCount and nFeature RNA transcripts and ATAC peaks by cell type
+VlnPlot(OPC_Oligo, features = c("nFeature_RNA", "nCount_RNA", "nFeature_ATAC", "nCount_ATAC"), stack = T, cols = c("OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early Oligo" = "#3998f5","Oligo" = "#1F51FF"))
+```
+
+```{r Figure 3D}
+##to plot expression of "H3-3A" and "H3-3B" across cell type
+VlnPlot(OPC_Oligo, features = c("H3-3A","H3-3B"), group.by = "Cell_Type_General", cols = cellcolor)
+
+##to plot expression of "H3-3A" and "H3-3B" across age
+VlnPlot(OPC_Oligo, features = c("H3-3A","H3-3B"), group.by = "dev.group", cols = devcolor)
+```
+
+```{r Figure 3E}
+##calculate DEG between different cell types
+DefaultAssay(OPC_OL) <- "RNA"
+OPC_OL_cell_DEG <- FindAllMarkers(OPC_OL, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract DEG of each cell type from OPC_OL_cell_DEG and make a list:
+list <- c("Fetal COP","OPC", "COP", "Early OL", "OL")
+
+##Load the genesets
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# For C5 gene ontology genesets
+C5genesets <- msigdbr(species = "Homo sapiens", category = "C5")
+C5togene <- C5genesets[,c("gs_exact_source","gene_symbol")]
+C5toname <- C5genesets[,c("gs_exact_source","gs_name")]
+
+# For GO Biological Process
+GOgenesets <- subset(C5genesets, subset=C5genesets[,"gs_subcat"]=="GO:BP")
+GOtogene <- GOgenesets[,c("gs_exact_source","gene_symbol")]
+GOtoname <- GOgenesets[,c("gs_exact_source","gs_name")]
+
+#get the GO Biological Process
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = rownames(eval(parse(text = x))),
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtoname)
+}
+)
+
+#GO Top5 Heatmap
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+df <- GO[[x]]
+df <- df[df$p.adjust < 0.05,]
+df <- df[order(df$p.adjust, decreasing = FALSE),]
+desc <- df$Description
+#desc <- desc[1:20]
+desc <- desc[1:5]
+return(desc)
+}
+)
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <-lapply(list, function(age){
+  Desc.df[age] <- 0
+  Cell.Type.Desc.df <- data.frame(GO[[age]])
+  Cell.Type.Desc.df$qvalue.scaled <- -log(Cell.Type.Desc.df$qvalue)
+  sig <-data.frame(Cell.Type.Desc.df[Cell.Type.Desc.df$p.adjust < 0.05,]) 
+  sig <- sig[order(sig$p.adjust, decreasing = F),]
+  Desc.df[sig$Description,age]<- Cell.Type.Desc.df[Cell.Type.Desc.df$Description %in% sig$Description, "qvalue.scaled"]
+  Desc.df <- Desc.df[unique(Desc),] 
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  return(Desc.df)
+  })
+df2 <- data.frame(cols)
+matrix_GO <- as.matrix(df2)
+colnames(matrix_GO) <- colnames(df2)
+rownames(matrix_GO) <- unique(Desc)
+matrix_GO = t(apply(df2, 1, scale))
+
+# Annotation
+AnnoDF <- data.frame(c("OPC", "Early Fetal COP", "COP","Early OL","OL"))
+colnames(AnnoDF) <- c("Cluster")
+AnnoDF$Cluster <- factor(AnnoDF$Cluster, levels = c("OPC", "Early Fetal COP", "COP","Early OL","OL"))
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Cluster = c("OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF")))
+
+#Draw GO heatmap
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE, row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_heatmap_legend = F)
+draw(plot_GO, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

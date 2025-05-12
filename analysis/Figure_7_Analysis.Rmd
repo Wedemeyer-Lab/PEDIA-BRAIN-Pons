@@ -583,3 +583,52 @@ chi.sq.res$expected
 chi.sq.res$observed
 ```
 
+```{r subset postnatal}
+postnatal <- subset(atlas, dev.group != "Fetal")
+```
+
+```{r comparison between Early OL and OL}
+mat <- matrix(c(table(cancer$Cell_Type)["Early Oligo"],
+                table(cancer$Cell_Type)["Oligo"],
+                table(postnatal$Cell_Type_General)["Early Oligo"],
+                table(postnatal$Cell_Type_General)["Oligo"]
+              ),
+              nrow = 2,
+              )
+
+EarlyOLvsOL<-chisq.test(mat, correct = F)
+EarlyOLvsOL
+EarlyOLvsOL$observed
+EarlyOLvsOL$expected
+```
+
+```{r comparison between RGs and Astrocytes}
+mat <- matrix(c(table(cancer$Cell_Type)["Radial Glia"],
+                table(cancer$Cell_Type)["Astrocyte"],
+                table(postnatal$Cell_Type_General)["Radial Glia"],
+                table(postnatal$Cell_Type_General)["Astrocyte"]
+              ),
+              nrow = 2,
+              )
+RGvsAstro<-chisq.test(mat, correct = F)
+RGvsAstro
+RGvsAstro$observed
+RGvsAstro$expected
+```
+
+```{r comparison of OLvs ALL}
+mat <- matrix(c(table(cancer$Cell_Type)["Oligo"],
+                sum(table(cancer$Cell_Type)),
+                table(postnatal$Cell_Type_General)["Oligo"],
+                sum(table(postnatal$Cell_Type_General))
+              ),
+              nrow = 2,
+              )
+
+OLvsAll<-chisq.test(mat, correct = F)
+OLvsAll
+OLvsAll$observed
+OLvsAll$expected
+
+```
+

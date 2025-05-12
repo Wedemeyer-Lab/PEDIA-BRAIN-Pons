@@ -1,0 +1,1568 @@
+---
+title: "Figure 1-4"
+author: "Sheldon Ding"
+date: "2025-03-18"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(openxlsx) 
+library(harmony)
+library(clustree)
+library(rGREAT)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(AnnotationHub)
+library(TFBSTools)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(IRanges)
+library(Biostrings)
+library(openxlsx)
+library(biomaRt)
+library(DESeq2)
+library(grid)
+library(SeuratWrappers)
+library(monocle3)
+library(EnhancedVolcano)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+
+###Figure 1
+```{r Figure 1A}
+##the schematic of experimental design was made on BioRender
+
+##to determine SNN resolution and number of clusters
+clustree(sobj) #determined the SNN resolution @0.8 and 35 clusters in total (SCT assay)
+
+#to SET SNN resolution as active identity for further analysis
+sobj <- SetIdent(sobj, value = sobj@meta.data$SCT_snn_res.0.8)
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(sobj) <- "RNA"
+sobj_cluster_DEG <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(sobj) <- "ATAC"
+sobj_cluster_DAP <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to make the RNA and ATAC DimPlot @ 0.8 resolution
+sobj <- SetIdent(sobj, value = sobj@meta.data$SCT_snn_res.0.8)
+DimPlot(sobj, reduction = "umap.rna") #RNA
+DimPlot(sobj, reduction = "umap.atac") #ATAC
+
+##based on DAP, DEG and canonical marker(see Supplemental Figure 1A analysis), we determined cell type of each cluster
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "OL"
+  cluster_1 <- "OL"
+  cluster_2 <- "OL"
+  cluster_3 <- "OL"
+  cluster_4 <- "Radial Glia"
+  cluster_5 <- "Astrocyte"
+  cluster_6 <- "PAX3 Neuron"
+  cluster_7 <- "Immune"
+  cluster_8 <- "HOXB3 Neuroblast"
+  cluster_9 <- "Transit Amplifying Cell"
+  cluster_10 <- "Motor Neuron"
+  cluster_11 <- "Early OL"
+  cluster_12 <- "OPC"
+  cluster_13 <- "Radial Glia"
+  cluster_14 <- "PAX3 Neuroblast"
+  cluster_15 <- "OPC"
+  cluster_16 <- "Endothelial"
+  cluster_17 <- "Immune"
+  cluster_18 <- "HOXB3 Neuroblast"
+  cluster_19 <- "Mesenchymal"
+  cluster_20 <- "Pericyte"
+  cluster_21 <- "Immune"
+  cluster_22 <- "COP"
+  cluster_23 <- "Ependymal"
+  cluster_24 <- "Astrocyte"
+  cluster_25 <- "Fetal COP"
+  cluster_26 <- "Ependymal"
+  cluster_27 <- "OL"
+  cluster_28 <- "Erythroblast"
+  cluster_29 <- "Immune"
+  cluster_30 <- "Early OL"
+  cluster_31 <- "COP"
+  cluster_32 <- "Early OL"
+  cluster_33 <- "Immune"
+  cluster_34 <- "Astrocyte"
+}
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10, cluster_11, cluster_12, cluster_13, cluster_14, cluster_15, cluster_16, cluster_17, cluster_18, cluster_19, cluster_20, cluster_21, cluster_22, cluster_23, cluster_24, cluster_25, cluster_26, cluster_27, cluster_28, cluster_29,cluster_30, cluster_31, cluster_32, cluster_33, cluster_34)
+
+names(new.cluster.ids) <- levels(sobj)
+sobj <- RenameIdents(sobj, new.cluster.ids)
+sobj@active.ident <- factor(x = sobj@active.ident, levels = c("ROBO2 Ependymal","SLIT2 Ependymal", "Radial Glia", "Transit Amplifying Cell", "PAX3 Neuroblast", "PAX3 Neuron", "HOXB3 Neuroblast", "Motor Neuron","Astrocyte","OPC", "Fetal COP","COP", "Early OL", "OL","Mesenchymal", "Immune", "Endothelial",  "Erythroblast", "Pericyte"))
+
+#add metadata of Cell Type called "Cell_Type_General"
+sobj$Cell_Type_General <- sobj@active.ident
+
+#assign colors to different cell types
+cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Motor Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+
+##to plot cell type on RNA DimPlot
+DimPlot(sobj, reduction = "umap.rna", label = T, cols = cellcolor)
+```
+
+```{r Figure 1B}
+##we customed cell cycle genes (for justification please see the main article)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+g2m.genes <- subset(g2m.genes, !(g2m.genes %in% c('ANLN','PSRC1','CKAP5', 'TUBB4B')))
+
+##to perform cell cycle/phase calculation
+DefaultAssay(sobj) <- "RNA"
+sobj <- NormalizeData(sobj)
+sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+
+#assign colors to different cell cycle/phase
+phasecolor <- c("G1" = "#E69F00", "S" = "#56B4E9", "G2M" = "#009E73", "Undecided" = "#F0E442")
+
+##to plot cell cycle/phase on RNA DimPlot
+DimPlot(sobj, label = F, cols = phasecolor, group.by = "Phase")
+```
+
+```{r Figure 1C}
+##we performed pseudotime analysis using Monocle 3 package
+##please see Monocle 3 website for official tutorial for your own resaerch needs
+
+#transform seurat object into a cds object for monocle to work
+cds <- as.cell_data_set(sobj)
+colData(cds)
+fData(cds)
+rownames(fData(cds))[1:10]
+fData(cds)$gene_short_name<-rownames(fData(cds))
+counts(cds)
+
+#create umap partition and cell embeddings including seurat metadata on cds object
+reacreate.partition<-c(rep(1,length(cds@colData@rownames)))
+reacreate.partition
+names(reacreate.partition)<-cds@colData@rownames
+reacreate.partition<-as.factor(reacreate.partition)
+reacreate.partition
+cds@clusters$UMAP$partitions<-reacreate.partition
+list_cluster<-sobj@active.ident
+cds@clusters$UMAP$clusters<-list_cluster
+cds@int_colData@listData$reducedDims$UMAP<-sobj@reductions$umap.rna@cell.embeddings
+
+#"learn graph" in order to calculate cell trajectory and pseudotime
+cds<-learn_graph(cds,use_partition = TRUE)
+
+#view cell trajectory in different cell types
+Cell_trajectory <- plot_cells(cds,
+           color_cells_by='cluster',
+           label_groups_by_cluster=FALSE,
+           label_branch_points = FALSE,
+           label_roots = FALSE,
+           label_leaves = FALSE,
+           group_label_size = 3)+ scale_colour_manual(
+  values = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Motor Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E"))
+
+#order cells for pseudotime analysis
+cds <- order_cells(cds)
+
+##to plot pseudotime on RNA DimPlot
+Cell_pseudotime <- plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "ident",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60")
+```
+
+```{r Figure 1D}
+##create a metadata of "postnatal" to differetiate "Fetal" and "Postnatal"
+sobj@meta.data$postnatal <- ifelse(sobj@meta.data$orig.ident %in% c("fetal_multiome"), "Fetal", "Postnatal") %>% factor()
+
+#set active identity to "postnatal"
+sobj <- SetIdent(sobj, value = sobj@meta.data$postnatal)
+
+##calculate the DEG between "Fetal" and "Postnatal"
+DefaultAssay(sobj) <- "RNA"
+sobj_Fetal_Postnatal_DEG <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##calculate the DAP between "Fetal" and "Postnatal"
+DefaultAssay(sobj) <- "ATAC"
+sobj_Fetal_Postnatal_DAP <- FindAllMarkers(sobj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#set active identity to "Cell_Type_General"
+sobj <- SetIdent(sobj, value = sobj@meta.data$Cell_Type_General)
+
+##to plot cell type composition difference between "Fetal" and "Postnatal" on RNA and ATAC DimPlot
+DimPlot(sobj, reduction = "umap.rna", split.by = "postnatal",label = F, cols = cellcolor)#RNA
+
+DimPlot(sobj, reduction = "umap.atac", split.by = "postnatal",label = F, cols = cellcolor)#ATAC
+```
+
+```{r Figure 1E}
+##extract metadata of "Cell_Type_General" and "dev.group" for ggplot visualization
+sobj@meta.data %>% group_by(Cell_Type_General, dev.group) %>% summarise(n = n()) %>% group_by(dev.group) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
+
+##to plot cell type composition difference between "Fetal" and "Postnatal" on BarPlot
+ggplot(df1, aes(x = dev.group, y = freq, fill = Cell_Type_General)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("dev.group") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+  theme_classic() + NoLegend()
+```
+
+
+###Figure 2
+```{r Figure 2A}
+##subset Radial Glials and Astrocytes for further analysis
+RGL_Astrocyte <- subset(sobj, idents = c("Radial Glia", "Astrocyte"))
+
+##run harmony to remove batch effect again on RNA assay
+RGL_Astrocyte_harmony <- RGL_Astrocyte#create a separate object in case mess up something
+DefaultAssay(RGL_Astrocyte_harmony) <- "RNA"
+RGL_Astrocyte_harmony <- RGL_Astrocyte_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+RGL_Astrocyte_harmony <- RunPCA(RGL_Astrocyte_harmony, assay = "SCT", npcs = 50)
+RGL_Astrocyte_harmony <- RunHarmony(RGL_Astrocyte_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+#normalize and SCT transform again after harmony
+DefaultAssay(RGL_Astrocyte_harmony) <- "RNA"
+RGL_Astrocyte_harmony <- RGL_Astrocyte_harmony %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+#recluster RGL_Astrocyte subset
+RGL_Astrocyte_harmony <- RGL_Astrocyte_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+
+##run harmony to remove batch effect again on ATAC assay
+DefaultAssay(RGL_Astrocyte_harmony) <- "ATAC" 
+RGL_Astrocyte_harmony <- RunTFIDF(RGL_Astrocyte_harmony) 
+RGL_Astrocyte_harmony <- FindTopFeatures(RGL_Astrocyte_harmony, min.cutoff = 'q0') 
+RGL_Astrocyte_harmony <- RunSVD(RGL_Astrocyte_harmony) 
+RGL_Astrocyte_harmony <- RunUMAP(RGL_Astrocyte_harmony, dims = 2:50, reduction = 'lsi')
+RGL_Astrocyte_harmony <- RunHarmony(object = RGL_Astrocyte_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+RGL_Astrocyte_harmony <- RunUMAP(RGL_Astrocyte_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+#to assgin color to each age group
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+##to plot RGL_Astrocyte_harmony age on RNA DimPlot
+DimPlot(RGL_Astrocyte_harmony, group.by = "dev.group",reduction = "umap.rna", label = F, cols = devcolor)
+
+##to determine SNN resolution and number of clusters
+clustree(RGL_Astrocyte_harmony) #determined the SNN resolution @0.6
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(RGL_Astrocyte_harmony) <- "RNA"
+RGL_Astrocyte_harmony_cluster_DEG <- FindAllMarkers(RGL_Astrocyte_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(RGL_Astrocyte_harmony) <- "ATAC"
+RGL_Astrocyte_harmony_cluster_DAP <- FindAllMarkers(RGL_Astrocyte_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##based on subcluster DAP, DEG and canonical marker (see Figure 2B analysis in the next "r chunk"), we determined cell type of each cluster
+#set active identity to SCT_snn_res.0.6
+RGL_Astrocyte_harmony <- SetIdent(RGL_Astrocyte_harmony, value = RGL_Astrocyte_harmony@meta.data$SCT_snn_res.0.6)
+#set cluster identity to cell type
+{
+  cluster_0 <- "SEMA3E Astrocyte"
+  cluster_1 <- "ROBO2 Radial Glia"
+  cluster_2 <- "ROBO2 Radial Glia"
+  cluster_3 <- "ROBO2 Radial Glia"
+  cluster_4 <- "ROBO2 Astrocyte"
+  cluster_5 <- "ROBO2 Astrocyte"
+  cluster_6 <- "SLIT2 Radial Glia"
+  cluster_7 <- "ROBO2 Radial Glia"
+  cluster_8 <- "OL-like Astrocyte"
+  cluster_9 <- "SLIT2 Radial Glia"
+  cluster_10 <- "SEMA3E Astrocyte"
+  cluster_11 <- "SEMA3E Astrocyte"
+  cluster_12 <- "ROBO2 Astrocyte"
+  cluster_13 <- "Undetermined Astrocyte"
+}
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10, cluster_11, cluster_12, cluster_13)
+names(new.cluster.ids) <- levels(RGL_Astrocyte_harmony)
+RGL_Astrocyte_harmony <- RenameIdents(RGL_Astrocyte_harmony, new.cluster.ids)
+RGL_Astrocyte_harmony$Subcluster <- RGL_Astrocyte_harmony@active.ident
+RGL_Astrocyte_harmony@meta.data$Subcluster <- factor(x = RGL_Astrocyte_harmony@meta.data$Subcluster, levels = c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte"))
+
+#assign colors to different subclusters
+RGL_Astrocyte_subcluster_color = c("ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", "ROBO2 Astrocyte" = "#FFA500","SEMA3E Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#BDC3C7")
+
+##to plot subcluster on RNA DimPlot
+DimPlot(RGL_Astrocyte_harmony, label = F, reduction = "umap.rna", cols = RGL_Astrocyte_subcluster_color)
+```
+
+```{r Figure 2B}
+##we selected Top5 DEG between different clusters and canonical markers
+DefaultAssay(RGL_Astrocyte_harmony) <- "RNA"
+RGL_Astrocyte_DotPlot_Genes <- read.xlsx("output/tables/RGL_Astrocyte_DotPlot_Genes.xlsx")
+
+##to plot Top5 DEG between different clusters and canonical markers on DotPlot
+DotPlot(RGL_Astrocyte_harmony, features = unique(RGL_Astrocyte_DotPlot_Genes$gene), group.by = "Subcluster") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=0.5)) + scale_y_discrete(limits=rev(c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte")))
+```
+
+```{r Figure 2C}
+##to plot expression of "H3-3A" and "H3-3B" across subcluster
+VlnPlot(RGL_Astrocyte_harmony, features = c("H3-3A","H3-3B"), group.by = "Subcluster", cols = RGL_Astrocyte_subcluster_color)
+
+##to plot expression of "H3-3A" and "H3-3B" across age
+VlnPlot(RGL_Astrocyte_harmony, features = c("H3-3A","H3-3B"), group.by = "dev.group", cols = devcolor)
+```
+
+```{r Figure 2D}
+##Load the genesets
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# For C5 gene ontology genesets
+C5genesets <- msigdbr(species = "Homo sapiens", category = "C5")
+C5togene <- C5genesets[,c("gs_exact_source","gene_symbol")]
+C5toname <- C5genesets[,c("gs_exact_source","gs_name")]
+
+# For GO Biological Process
+GOgenesets <- subset(C5genesets, subset=C5genesets[,"gs_subcat"]=="GO:BP")
+GOtogene <- GOgenesets[,c("gs_exact_source","gene_symbol")]
+GOtoname <- GOgenesets[,c("gs_exact_source","gs_name")]
+
+#extract DEG of each subcluster from RGL_Astrocyte_harmony_cluster_DEG and make a list:
+list <- c("ROBO2_Radial_Glia", "SLIT2_Radial_Glia", "ROBO2_Astrocyte","SEMA3E_Astrocyte","OL_like_Astrocyte","Undetermined_Astrocyte")
+
+#get the GO Biological Process
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = rownames(eval(parse(text = x))),
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtoname)
+})
+
+#GO Top5 Heatmap
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+df <- GO[[x]]
+df <- df[df$p.adjust < 0.05,]
+df <- df[order(df$p.adjust, decreasing = FALSE),]
+desc <- df$Description
+#desc <- desc[1:20]
+desc <- desc[1:5]
+return(desc)
+}
+)
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <-lapply(list, function(age){
+  Desc.df[age] <- 0
+  Subcluster.Desc.df <- data.frame(GO[[age]])
+  Subcluster.Desc.df$qvalue.scaled <- -log(Subcluster.Desc.df$qvalue)
+  sig <-data.frame(Subcluster.Desc.df[Subcluster.Desc.df$p.adjust < 0.05,]) 
+  sig <- sig[order(sig$p.adjust, decreasing = F),]
+  Desc.df[sig$Description,age]<- Subcluster.Desc.df[Subcluster.Desc.df$Description %in% sig$Description, "qvalue.scaled"]
+  Desc.df <- Desc.df[unique(Desc),] 
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  return(Desc.df)
+  })
+df2 <- data.frame(cols)
+matrix_GO <- as.matrix(df2)
+colnames(matrix_GO) <- colnames(df2)
+rownames(matrix_GO) <- unique(Desc)
+matrix_GO = t(apply(df2, 1, scale))
+
+#annotation
+AnnoDF <- data.frame(c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","Oligo-like Astrocyte","Undetermined Astrocyte"))
+colnames(AnnoDF) <- c("Cluster")
+AnnoDF$Cluster <- factor(AnnoDF$Cluster, levels = c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte"))
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Cluster = c("ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", "ROBO2 Astrocyte" = "#FFA500","SEMA3E Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#BDC3C7")))
+
+#draw the heatmap of GO biological processes difference between different subclusters
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE, row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_heatmap_legend = F)
+draw(plot_GO, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+```{r Figure 2E}
+#create a list of subclusters for barplot
+subcluster <- c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte")
+
+#get the number of unique peaks across subcluster from RGL_Astrocyte_harmony_cluster_DAP
+RGL_Astrocyte_subcluster_unique_DAP <- c(6266, 915, 29, 181,281,0)
+
+#create a dataframe
+RGL_Astrocyte_subcluster_unique_DAP_df <- data.frame(subcluster, RGL_Astrocyte_subcluster_unique_DAP,stringsAsFactors = FALSE)
+RGL_Astrocyte_subcluster_unique_DAP_df$subcluster <- factor(x = RGL_Astrocyte_subcluster_unique_DAP_df$subcluster, levels = c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte"))
+
+##to plot unique DAP across subclusters on BarPlot
+ggplot() +
+  geom_bar(data = RGL_Astrocyte_subcluster_unique_DAP_df, aes(x = subcluster, y = RGL_Astrocyte_subcluster_unique_DAP, fill = subcluster), stat = "identity") + scale_fill_manual(values = RGL_Astrocyte_subcluster_color) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 2F}
+#create a list of age groups for barplot
+age <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+##to calculate differentially accessible peaks (DAP) across age groups
+DefaultAssay(RGL_Astrocyte_harmony) <- "ATAC"
+RGL_Astrocyte_harmony <- SetIdent(RGL_Astrocyte_harmony, value = RGL_Astrocyte_harmony@meta.data$dev.group)
+RGL_Astrocyte_harmony_age_DAP <- FindAllMarkers(RGL_Astrocyte_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#get the number of unique peaks across age from RGL_Astrocyte_harmony_age_DAP
+RGL_Astrocyte_age_unique_DAP <- c(10222, 697, 0, 429, 23)
+
+#create a dataframe
+RGL_Astrocyte_age_unique_DAP_df <- data.frame(age, RGL_Astrocyte_age_unique_DAP_df,stringsAsFactors = FALSE)
+RGL_Astrocyte_age_unique_DAP_df$age <- factor(x = RGL_Astrocyte_age_unique_DAP_df$age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+
+##to plot unique DAP across age groups on BarPlot
+ggplot() +
+  geom_bar(data = RGL_Astrocyte_age_unique_DAP_df, aes(x = age, y = RGL_Astrocyte_age_unique_DAP, fill = age), stat = "identity") + scale_fill_manual(values = devcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+
+###Figure 3
+```{r Figure 3A}
+##the schematic of proposed developmental trajectories for fetal and postnatal oligodendrocyte generation was made on BioRender
+```
+
+```{r Figure 3B}
+##subset OPC and OL
+OPC_Oligo <- subset(sobj, idents = c("Fetal COP","OPC", "COP", "Early OL", "OL"))
+
+##to plot expression of canonical markers across different cell types
+DefaultAssay(OPC_Oligo) <- "RNA"
+RidgePlot(OPC_Oligo, features = c("SOX2","YAP1","PDGFRA","OLIG1","OLIG2","SOX10","BCAS1","TCF7L1","MYRF","PLP1","RBFOX1", "CNP"), stack = T, fill.by = "ident") + scale_y_discrete(limits=rev(c("Fetal COP", "OPC", "COP","Early Oligo", "Oligo"))) + scale_fill_manual(values = c("OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early Oligo" = "#3998f5","Oligo" = "#1F51FF"))
+```
+
+```{r Figure 3C}
+##to plot nCount and nFeature RNA transcripts and ATAC peaks by cell type
+VlnPlot(OPC_Oligo, features = c("nFeature_RNA", "nCount_RNA", "nFeature_ATAC", "nCount_ATAC"), stack = T, cols = c("OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early Oligo" = "#3998f5","Oligo" = "#1F51FF"))
+```
+
+```{r Figure 3D}
+##to plot expression of "H3-3A" and "H3-3B" across cell type
+VlnPlot(OPC_Oligo, features = c("H3-3A","H3-3B"), group.by = "Cell_Type_General", cols = cellcolor)
+
+##to plot expression of "H3-3A" and "H3-3B" across age
+VlnPlot(OPC_Oligo, features = c("H3-3A","H3-3B"), group.by = "dev.group", cols = devcolor)
+```
+
+```{r Figure 3E}
+##calculate DEG between different cell types
+DefaultAssay(OPC_OL) <- "RNA"
+OPC_OL_cell_DEG <- FindAllMarkers(OPC_OL, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract DEG of each cell type from OPC_OL_cell_DEG and make a list:
+list <- c("Fetal COP","OPC", "COP", "Early OL", "OL")
+
+#get the GO Biological Process
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = rownames(eval(parse(text = x))),
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtoname)
+}
+)
+
+#GO Top5 Heatmap
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+df <- GO[[x]]
+df <- df[df$p.adjust < 0.05,]
+df <- df[order(df$p.adjust, decreasing = FALSE),]
+desc <- df$Description
+#desc <- desc[1:20]
+desc <- desc[1:5]
+return(desc)
+}
+)
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <-lapply(list, function(age){
+  Desc.df[age] <- 0
+  Cell.Type.Desc.df <- data.frame(GO[[age]])
+  Cell.Type.Desc.df$qvalue.scaled <- -log(Cell.Type.Desc.df$qvalue)
+  sig <-data.frame(Cell.Type.Desc.df[Cell.Type.Desc.df$p.adjust < 0.05,]) 
+  sig <- sig[order(sig$p.adjust, decreasing = F),]
+  Desc.df[sig$Description,age]<- Cell.Type.Desc.df[Cell.Type.Desc.df$Description %in% sig$Description, "qvalue.scaled"]
+  Desc.df <- Desc.df[unique(Desc),] 
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  return(Desc.df)
+  })
+df2 <- data.frame(cols)
+matrix_GO <- as.matrix(df2)
+colnames(matrix_GO) <- colnames(df2)
+rownames(matrix_GO) <- unique(Desc)
+matrix_GO = t(apply(df2, 1, scale))
+
+# Annotation
+AnnoDF <- data.frame(c("OPC", "Early Fetal COP", "COP","Early OL","OL"))
+colnames(AnnoDF) <- c("Cluster")
+AnnoDF$Cluster <- factor(AnnoDF$Cluster, levels = c("OPC", "Early Fetal COP", "COP","Early OL","OL"))
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Cluster = c("OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF")))
+
+#Draw GO heatmap
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE, row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_heatmap_legend = F)
+draw(plot_GO, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+
+###Figure 4
+```{r Figure 4A}
+##subset OPC and COP for further analysis
+OPC_subset <- subset(sobj, idents = c("OPC", "COP"))
+
+##run harmony to remove batch effect again on RNA assay
+OPC_harmony <- OPC_subset#create a separate object in case mess up something
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony <- OPC_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+OPC_harmony <- RunPCA(OPC_harmony, assay = "SCT", npcs = 50)
+OPC_harmony <- RunHarmony(OPC_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+#normalize and SCT transform again after harmony
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony <- OPC_harmony %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+#recluster OPC subset
+OPC_harmony <- OPC_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+
+##run harmony to remove batch effect again on ATAC assay
+DefaultAssay(OPC_harmony) <- "ATAC" 
+OPC_harmony <- RunTFIDF(OPC_harmony) 
+OPC_harmony <- FindTopFeatures(OPC_harmony, min.cutoff = 'q0') 
+OPC_harmony <- RunSVD(OPC_harmony) 
+OPC_harmony <- RunUMAP(OPC_harmony, dims = 2:50, reduction = 'lsi')
+OPC_harmony <- RunHarmony(object = OPC_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+OPC_harmony <- RunUMAP(OPC_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+##to plot OPC_harmony age on RNA DimPlot
+DimPlot(OPC_harmony, group.by = "dev.group",reduction = "umap.rna", label = F, cols = devcolor)
+
+##to determine SNN resolution and number of clusters
+clustree(OPC_harmony) #determined the SNN resolution @0.6
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony_cluster_DEG <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony_cluster_DAP <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##based on subcluster DAP, DEG and canonical marker (see Supplemental Figure 3C analysis), we determined cell type of each cluster
+#set active identity to SCT_snn_res.0.6
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$SCT_snn_res.0.6)
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "OPC"
+  cluster_1 <- "RG-like OPC"
+  cluster_2 <- "OPC"
+  cluster_3 <- "OPC"
+  cluster_4 <- "RG-like OPC"
+  cluster_5 <- "OPC"
+  cluster_6 <- "COP"
+  cluster_7 <- "RG-like OPC"
+  cluster_8 <- "COP"
+  cluster_9 <- "Astrocyte-like OPC"
+  cluster_10 <- "OPC"
+}
+
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10)
+names(new.cluster.ids) <- levels(OPC_harmony)
+OPC_harmony <- RenameIdents(OPC_harmony, new.cluster.ids)
+OPC_harmony$Subcluster <- OPC_harmony@active.ident
+OPC_harmony@meta.data$Subcluster <- factor(x = OPC_harmony@meta.data$Subcluster, levels = c("RG-like OPC","OPC","COP","Astrocyte-like OPC"))
+
+#assign colors to each subcluster
+OPC_subcluster_color = c("RG-like OPC" =  "#89CFF0","OPC" = "blue","COP" = "#0096FF","Astrocyte-like OPC"= "#40E0D0")
+
+##to plot subcluster on RNA DimPlot
+DimPlot(OPC_harmony, label = F, reduction = "umap.rna", cols = OPC_subcluster_color)
+```
+
+```{r Figure 4B}
+#set sobj identity to subcluster (all the subsets' subclusters were organized into a subcluster metadata of sobj when we finished the analysis even tho it is not done yet at this step)
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$subcluster)
+
+#subset Radial Glial and RG-like OPC
+RGL_OPC <- subset(sobj, idents = c("ROBO2 Radial Glia","SLIT2 Radial Glia","RG-like OPC"))
+
+#create a metadata of subtype in RGL_OPC
+RGL_OPC@meta.data$RGL <- ifelse(RGL_OPC@meta.data$Subtype %in% c("ROBO2 Radial Glia", "SLIT2 Radial Glia"), "Radial Glia", "RG-like")
+
+#create a metadata of ID_Cell in RGL_OPC
+RGL_OPC@meta.data$ID_Cell <- gsub(" ", "_", paste0(RGL_OPC@meta.data$sample_id, "_",RGL_OPC@meta.data$RGL))
+
+#get count data
+pb <- data.frame(gene = rownames(RGL_OPC@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(RGL_OPC@meta.data$ID_Cell)){
+     print(sample)
+  if (sum(RGL_OPC$ID_Cell == sample) > 10){
+    sub <- subset(RGL_OPC, ID_Cell == sample)
+    #include data only if there are more than 10 cells for that sample
+        #sum up the counts for each gene and save it to the pseudobulk dataframe
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the celltype
+colData$cellType <- ifelse(grepl("Radial_Glia", colData$sample), "Radial_Glia", "RG-like")
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+##perform DESeq
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+
+# run DESeq2
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#set contrast
+contrast <- c("cellType", "RG-like", "Radial_Glia")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+#set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between Radial Glial and RG-like OPC
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("BCAR3","PDGFRA","GPR17"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4C}
+#subset RG-like OPC and OPC
+RGL_OPC_OPC <- subset(OPC_harmony, idents = c("RG-like OPC", "OPC"))
+
+#create a metadata of ID_Cell
+RGL_OPC@meta.data$ID_Cell <- gsub(" ", "_", paste0(RGL_OPC@meta.data$sample_id, "_",RGL_OPC@meta.data$subcluster))
+
+#get count data
+pb <- data.frame(gene = rownames(RGL_OPC@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(RGL_OPC@meta.data$ID_Cell)){
+    sub <- subset(RGL_OPC, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("RG-like OPC", colData$sample), "RG-like OPC", "OPC")
+
+#set contrast
+contrast <- c("cellType", "OPC", "RG-like OPC")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between RG-like OPC and OPC
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("TOP2A","YAP1","MKI67","CHL1","GRM7"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4D}
+##to plot differentially expressed genes in OPCs across development on ViolinPlot
+DefaultAssay(OPC_harmony) <- "RNA"
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$dev.group)
+VlnPlot(OPC_harmony, features = c("SEMA5A", "RBFOX1", "PLEKHH2","SEMA3E", "C1QL1", "PDGFC", "PTGDS","NR4A1"), split.by = "dev.group",cols = devcolor, stack = T, flip = T)
+```
+
+```{r Figure 4E}
+#create a list of subclusters for barplot
+subcluster <- c("RG-like OPC","OPC","COP","Astrocyte-like OPC")
+
+#get the number of unique peaks across subcluster from OPC_harmony_cluster_DAP
+OPC_subcluster_unique_DAP <- c(9197, 5, 457, 300)
+
+#create a dataframe
+OPC_subcluster_unique_DAP_df <- data.frame(subcluster, OPC_subcluster_unique_DAP,stringsAsFactors = FALSE)
+OPC_subcluster_unique_DAP_df$subcluster <- factor(x = OPC_subcluster_unique_DAP_df$subcluster, levels = c("RG-like OPC","OPC","COP","Astrocyte-like OPC"))
+
+##to plot unique DAP across subclusters on BarPlot
+ggplot() +
+  geom_bar(data = OPC_subcluster_unique_DAP_df, aes(x = subcluster, y = OPC_subcluster_unique_DAP, fill = subcluster), stat = "identity") + scale_fill_manual(values = OPC_subcluster_color) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 4F}
+#create a list of age groups for barplot
+age <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+##to calculate differentially accessible peaks (DAP) across age groups
+DefaultAssay(OPC_harmony) <- "ATAC"
+OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$dev.group)
+OPC_harmony_age_DAP <- FindAllMarkers(OPC_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#get the number of unique peaks across age from OPC_harmony_age_DAP
+OPC_age_unique_DAP <- c(12038, 0, 0, 0, 0)
+
+#create a dataframe
+OPC_age_unique_DAP_df <- data.frame(age, OPC_age_unique_DAP_df,stringsAsFactors = FALSE)
+OPC_age_unique_DAP_df$age <- factor(x = OPC_age_unique_DAP_df$age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+
+##to plot unique DAP across age groups on BarPlot
+ggplot() +
+  geom_bar(data = OPC_age_unique_DAP_df, aes(x = age, y = OPC_age_unique_DAP_df, fill = age), stat = "identity") + scale_fill_manual(values = devcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 4G}
+##subset OL and Early OL for further analysis
+OL_subset <- subset(sobj, idents = c("OL", "Early OL"))
+
+##run harmony to remove batch effect again on RNA assay
+OL_harmony <- OL_subset#create a separate object in case mess up something
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony <- OL_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+OL_harmony <- RunPCA(OL_harmony, assay = "SCT", npcs = 50)
+OL_harmony <- RunHarmony(OL_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+#normalize and SCT transform again after harmony
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony <- OL_harmony %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+#recluster OL subset
+OL_harmony <- OL_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+
+##run harmony to remove batch effect again on ATAC assay
+DefaultAssay(OL_harmony) <- "ATAC" 
+OL_harmony <- RunTFIDF(OL_harmony) 
+OL_harmony <- FindTopFeatures(OL_harmony, min.cutoff = 'q0') 
+OL_harmony <- RunSVD(OL_harmony) 
+OL_harmony <- RunUMAP(OL_harmony, dims = 2:50, reduction = 'lsi')
+OL_harmony <- RunHarmony(object = OL_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+OL_harmony <- RunUMAP(OL_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+##to plot OL_harmony age on RNA DimPlot
+DimPlot(OL_harmony, group.by = "dev.group",reduction = "umap.rna", label = F, cols = devcolor)
+
+##to determine SNN resolution and number of clusters
+clustree(OL_harmony) #determined the SNN resolution @0.6
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony_cluster_DEG <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(OL_harmony) <- "ATAC"
+OL_harmony_cluster_DAP <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+##based on subcluster DAP, DEG and canonical marker (see Supplemental Figure 4B analysis), we determined cell type of each cluster
+#set active identity to SCT_snn_res.0.6
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$SCT_snn_res.0.6)
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "RBFOX1 OL"
+  cluster_1 <- "RBFOX1 OL"
+  cluster_2 <- "RBFOX1 OL"
+  cluster_3 <- "Early OL"
+  cluster_4 <- "RBFOX1 OL"
+  cluster_5 <- "RBFOX1 OL"
+  cluster_6 <- "OPALIN OL"
+  cluster_7 <- "RBFOX1 OL"
+  cluster_8 <- "OPALIN OL"
+  cluster_9 <- "Early OL"
+  cluster_10 <- "OPALIN OL"
+  cluster_11 <- "RBFOX1 OL"
+  cluster_12 <- "OPALIN OL"
+}
+
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10, cluster_11, cluster_12)
+names(new.cluster.ids) <- levels(OL_harmony)
+OL_harmony <- RenameIdents(OL_harmony, new.cluster.ids)
+OL_harmony$Subcluster <- OL_harmony@active.ident
+OL_harmony@meta.data$Subcluster <- factor(x = OL_harmony@meta.data$Subcluster, levels = c("Early OL","RBFOX1 OL","OPALIN OL"))
+
+#assign colors to each subcluster
+OL_subcluster_color = c("Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB")
+
+##to plot subcluster on RNA DimPlot
+DimPlot(OL_harmony, label = F, reduction = "umap.rna", cols = OL_subcluster_color)
+```
+
+```{r Figure 4H}
+#create a metadata of ID_Cell
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony@meta.data$ID_Cell <- gsub(" ", "_", paste0(OL_harmony@meta.data$sample_id, "_",
+                                OL_harmony@meta.data$Cell_Type_General))
+
+#get count data
+pb <- data.frame(gene = rownames(OL_harmony@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(OL_harmony@meta.data$ID_Cell)){
+    sub <- subset(OL_harmony, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("Early_OL", colData$sample), "Early_OL", "OL")
+
+#set contrast
+contrast <- c("cellType", "OL", "Early_OL")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between OL and Early OL
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("UGGT2","PFKP","PALD1","DAPK1"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4I}
+#set active identity to subcluster
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$subcluster)
+
+#make a subset of RBFOX1 OL and OPALIN OL
+subset <- subset(OL_harmony, idents = c("RBFOX1 OL", "OPALIN OL"))
+
+#create a metadata of ID_Cell
+subset@meta.data$ID_Cell <- gsub(" ", "_", paste0(subset@meta.data$sample_id, "_",
+                                subset@meta.data$subcluster))
+
+#get count data
+pb <- data.frame(gene = rownames(subset@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(subset@meta.data$ID_Cell)){
+    sub <- subset(subset, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("OPALIN OL", colData$sample), "OPALIN OL", "RBFOX1 OL")
+
+#set contrast
+contrast <- c("cellType", "RBFOX1 OL", "OPALIN OL")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between OL and Early OL
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("UGGT2","PFKP","PALD1","DAPK1"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 4J}
+##to plot differentially expressed genes in Oligodendrocyte across development on ViolinPlot
+DefaultAssay(OL_harmony) <- "RNA"
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$dev.group)
+VlnPlot(OL_harmony, features = c("DISC1", "OPALIN", "GRIK2","SEMA5A", "NLGN1", "RBFOX1", "PTGDS"), split.by = "dev.group",cols = devcolor, stack = T, flip = T)
+```
+
+```{r Figure 4K}
+#create a list of subclusters for barplot
+subcluster <- c("Early OL", "RBFOX1 OL", "OPALIN OL")
+
+#get the number of unique peaks across subcluster from OL_harmony_cluster_DAP
+OL_subcluster_unique_DAP <- c(3,66,3)
+
+#create a dataframe
+OL_subcluster_unique_DAP_df <- data.frame(subcluster, OL_subcluster_unique_DAP,stringsAsFactors = FALSE)
+OL_subcluster_unique_DAP_df$subcluster <- factor(x = OL_subcluster_unique_DAP_df$subcluster, levels = c("Early OL", "RBFOX1 OL", "OPALIN OL"))
+
+##to plot unique DAP across subclusters on BarPlot
+ggplot() +
+  geom_bar(data = OL_subcluster_unique_DAP_df, aes(x = subcluster, y = OL_subcluster_unique_DAP, fill = subcluster), stat = "identity") + scale_fill_manual(values = OL_subcluster_color) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 4L}
+#create a list of age groups for barplot
+age <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+##to calculate differentially accessible peaks (DAP) across age groups
+DefaultAssay(OL_harmony) <- "ATAC"
+OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$dev.group)
+OL_harmony_age_DAP <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#get the number of unique peaks across age from OL_harmony_age_DAP
+OL_age_unique_DAP <- c(8, 4, 17, 221, 1234)
+
+#create a dataframe
+OL_age_unique_DAP_df <- data.frame(age, OL_age_unique_DAP_df,stringsAsFactors = FALSE)
+OL_age_unique_DAP_df$age <- factor(x = OL_age_unique_DAP_df$age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+
+##to plot unique DAP across age groups on BarPlot
+ggplot() +
+  geom_bar(data = OL_age_unique_DAP_df, aes(x = age, y = OL_age_unique_DAP_df, fill = age), stat = "identity") + scale_fill_manual(values = devcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+
+###Figure 5
+```{r}
+##subset Immune cells for further analysis
+Immune_subset <- subset(sobj, idents = c("Immune"))
+
+##run harmony to remove batch effect again on RNA assay
+Immune_harmony <- Immune_subset#create a separate object in case mess up something
+DefaultAssay(Immune_harmony) <- "RNA"
+Immune_harmony <- Immune_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+Immune_harmony <- RunPCA(Immune_harmony, assay = "SCT", npcs = 50)
+Immune_harmony <- RunHarmony(Immune_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+#normalize and SCT transform again after harmony
+DefaultAssay(Immune_harmony) <- "RNA"
+Immune_harmony <- Immune_harmony %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+#recluster Immune subset
+Immune_harmony <- Immune_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+
+##run harmony to remove batch effect again on ATAC assay
+DefaultAssay(Immune_harmony) <- "ATAC" 
+Immune_harmony <- RunTFIDF(Immune_harmony) 
+Immune_harmony <- FindTopFeatures(Immune_harmony, min.cutoff = 'q0') 
+Immune_harmony <- RunSVD(Immune_harmony) 
+Immune_harmony <- RunUMAP(Immune_harmony, dims = 2:50, reduction = 'lsi')
+Immune_harmony <- RunHarmony(object = Immune_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+Immune_harmony <- RunUMAP(Immune_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+##to plot Immune_harmony age on RNA DimPlot
+DimPlot(Immune_harmony, group.by = "dev.group",reduction = "umap.rna", label = F, cImmunes = devcImmuneor)
+
+##to determine SNN resolution and number of clusters
+clustree(Immune_harmony) #determined the SNN resolution @0.6
+
+##to calculate differentially expressed genes (DEG) between different clusters
+DefaultAssay(Immune_harmony) <- "RNA"
+Immune_harmony_cluster_DEG <- FindAllMarkers(Immune_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshImmuned = 0.25)
+
+##to calculate differentially accessible peaks (DAP) between different clusters
+DefaultAssay(Immune_harmony) <- "ATAC"
+Immune_harmony_cluster_DAP <- FindAllMarkers(Immune_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshImmuned = 0.25)
+
+##based on subcluster DAP, DEG and canonical marker (see Figure 5E analysis), we determined cell type of each cluster
+#set active identity to SCT_snn_res.0.6
+Immune_harmony <- SetIdent(Immune_harmony, value = Immune_harmony@meta.data$SCT_snn_res.0.6)
+
+#set cluster identity to cell type
+{
+  cluster_0 <- "Microglia"
+  cluster_1 <- "Fetal Microglia"
+  cluster_2 <- "Microglia"
+  cluster_3 <- "Macrophage"
+  cluster_4 <- "Microglia"
+  cluster_5 <- "Macrophage"
+  cluster_6 <- "Microglia"
+  cluster_7 <- "Microglia"
+  cluster_8 <- "Immune OL"
+  cluster_9 <- "Fetal Microglia"
+  cluster_10 <- "Fetal Microglia"
+  cluster_11 <- "Lymphatic Endothelial"
+  cluster_12 <- "Microglia" #metabolic
+  cluster_13 <- "Fetal Microglia"
+  cluster_14 <- "Lymphocyte"
+  cluster_15 <- "Immune OL"
+}
+
+Immune_harmony <- SetIdent(Immune_harmony, value = Immune_harmony@meta.data$SCT_snn_res.0.6)
+new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, cluster_5, cluster_6, cluster_7, cluster_8, cluster_9, cluster_10, cluster_11, cluster_12, cluster_13, cluster_14, cluster_15)
+names(new.cluster.ids) <- levels(Immune_harmony)
+Immune_harmony <- RenameIdents(Immune_harmony, new.cluster.ids)
+Immune_harmony$Subcluster <- Immune_harmony@active.ident
+Immune_harmony@meta.data$Subcluster <- factor(x = Immune_harmony@meta.data$Subcluster, levels = c("Fetal Microglia", "Microglia", "Macrophage","Lymphocyte","Lymphatic Endothelial", "Immune OL"))
+
+#assign colors to different subclusters
+Immune_subcluster_color <- c("Fetal Microglia" = "#FFB3BA", "Microglia" = "#FF6F61","Macrophage" = "#E75480", "Lymphocyte" = "darkred","Lymphatic Endothelial" = "#D5006D", "Immune OL" = "#D8BFD8")
+
+##to plot subcluster on RNA DimPlot
+DimPlot(Immune_harmony, label = F, reduction = "umap.rna", cols = Immune_subcluster_color)
+
+##to plot subcluster on ATAC DimPlot
+DimPlot(Immune_harmony, label = F, reduction = "umap.atac", cols = Immune_subcluster_color)
+```
+
+```{r Figure 5B}
+#set active identity to age group
+Immune_harmony <- SetIdent(Immune_harmony, value = Immune_harmony@meta.data$dev.group)
+
+##to plot age on RNA DimPlot
+DimPlot(Immune_harmony, label = F, reduction = "umap.rna", cols = devcolor)
+
+##to plot age on ATAC DimPlot
+DimPlot(Immune_harmony, label = F, reduction = "umap.atac", cols = devcolor)
+```
+
+```{r Figure 5C}
+##to plot cell type composition difference across age groups on BarPlot
+Immune_harmony@meta.data %>% group_by(dev.group, Subcluster) %>% summarise(n = n()) %>% group_by(Subcluster) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
+
+ggplot(df1, aes(x = Subcluster, y = freq, fill = dev.group)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("Subcluster") + ylab("Proportion") + NoLegend() +
+  scale_fill_manual(values = dev.group) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme( axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 5D}
+#create a list of age groups for barplot
+age <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+#subset Microglia
+Microglia <- subset(Immune_harmony, idents = c("Microglia", "Fetal Microglia"))
+
+##to calculate differentially accessible peaks (DAP) across age groups
+DefaultAssay(Microglia) <- "ATAC"
+Microglia <- SetIdent(Microglia, value = Microglia@meta.data$dev.group)
+Microglia_age_DAP <- FindAllMarkers(Microglia, only.pos = TRUE, min.pct = 0.25, logfc.threshImmuned = 0.25)
+
+#get the number of unique peaks across age from Immune_harmony_age_DAP
+Microglia_age_unique_DAP <- c(12525, 1, 7, 0, 1)
+
+#create a dataframe
+Microglia_age_unique_DAP <- data.frame(age, Microglia_age_unique_DAP,stringsAsFactors = FALSE)
+Microglia_age_unique_DAP$age <- factor(x = Microglia_age_unique_DAP$age, levels = c("Fetal", "Infant", "Child", "AdImmuneescent", "Adult"))
+
+##to plot unique DAP across age groups on BarPlot
+ggplot() +
+  geom_bar(data = Microglia_age_unique_DAP, aes(x = age, y = Microglia_age_unique_DAP, fill = age), stat = "identity") + scale_fill_manual(values = devcImmuneor) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_classic() + 
+  theme(axis.title.y = element_blank(), axis.title.x = element_blank())
+```
+
+```{r Figure 5E}
+#set active identity to subcluster
+Immune_harmony <- SetIdent(Immune_harmony, value = Immune_harmony@meta.data$Subcluster)
+DefaultAssay(Immune_harmony) <- "RNA"
+
+##to plot canonical markers expressed in each subcluster on ViolinPlot
+VlnPlot(Immune_harmony, features = c("VIM","APOE","P2RY12","CX3CR1","PTPRC","CD74","HLA-DRA","HLA-DRB1","IL32","LYVE1","PLP1","PTGDS","BCAS1","MAG", "SOX2","OLIG1"), stack = T, flip = T, fill.by = "ident", cols = Immune_subcluster_color)
+```
+
+```{r Figure 5F}
+#create a subset of only Microglia and Immune OL
+subset <- subset(Immune_harmony, idents = c("Fetal Microglia", "Microglia", "Immune Oligo"))
+
+#create a metadata of "Oligo" to indicate whether the cell is either a Microglia or Oligo
+subset@meta.data$Oligo <- ifelse(subset@meta.data$Subtype %in% c("Fetal Microglia", "Microglia"), "Microglia", "Oligo")
+
+#set active identity to "Oligo"
+DefaultAssay(subset) <- "RNA"
+subset <- SetIdent(subset, value = subset@meta.data$Oligo)
+
+#create a metadata of ID_Cell
+subset@meta.data$ID_Cell <- gsub(" ", "_", paste0(subset@meta.data$sample_id, "_",
+                                subset@meta.data$Oligo))
+
+#get count data
+pb <- data.frame(gene = rownames(subset@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(subset@meta.data$ID_Cell)){
+    sub <- subset(subset, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("Microglia", colData$sample), "Microglia", "Oligo")
+
+#set contrast
+contrast <- c("cellType", "Oligo", "Microglia")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between Immune Oligo and Microglia
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("MEF2","AKAP13","BCAS1","MBP","UGT8"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 5G}
+#create a subset of only OL and Immune OL
+subset <- subset(sobj, idents = c("RBFOX1 OL", "OPALIN OL" , "Immune OL"))
+
+#create a metadata of "Oligo" to indicate whether the cell is either a OL or Immune OL
+subset@meta.data$Oligo <- ifelse(subset@meta.data$Subtype %in% c("RBFOX1 Oligo", "OPALIN Oligo"), "Oligo", "Immune Oligo")
+
+#set active identity to "Oligo"
+DefaultAssay(subset) <- "RNA"
+subset <- SetIdent(subset, value = subset@meta.data$Oligo)
+
+#create a metadata of ID_Cell
+subset@meta.data$ID_Cell <- gsub(" ", "_", paste0(subset@meta.data$sample_id, "_",
+                                subset@meta.data$Oligo))
+
+#get count data
+pb <- data.frame(gene = rownames(subset@assays$RNA@counts))
+
+#set rownames as gene names
+rownames(pb) <- pb$gene
+for (sample in unique(subset@meta.data$ID_Cell)){
+    sub <- subset(subset, subset = ID_Cell == sample)
+    if (nrow(sub@meta.data) > 9){
+        pb[sample] <- rowSums(sub@assays$RNA@counts)
+    } else {
+        print(paste("NOTE: sample", sample, "has less than 10 cells. 
+        This sample will be skipped."))
+    }
+}
+
+#remove gene column (since rownames are genes)
+pb <- pb[, -1]
+colData <- data.frame(sample = colnames(pb))
+
+#create a column that is just the cell type
+colData$cellType <- ifelse(grepl("Immune_Oligo", colData$sample), "Immune Oligo", "Oligo")
+
+#set contrast
+contrast <- c("cellType", "Immune Oligo", "Oligo")
+
+# set rownames as the sample names
+rownames(colData) <- colData$sample
+
+#run DESeq2
+dds <- DESeq2::DESeqDataSetFromMatrix(
+            countData = pb,
+            colData = colData,
+            design = ~ cellType)
+dds <- DESeq2::DESeq(dds)
+rld <- rlog(dds, blind=TRUE)
+DESeq2::plotPCA(rld, intgroup = "cellType")
+
+#resultsNames(dds)
+res <- results(dds, 
+               contrast = contrast,
+               alpha = 0.05)
+res <- lfcShrink(dds,
+                 contrast =  contrast,
+                 res=res, type = "normal")
+res_tbl <- res %>%
+        data.frame() %>%
+        rownames_to_column(var="gene") %>%
+        as_tibble()
+
+# Set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+                  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+#set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+
+#sum(res_table_thres$threshold & (res_table_thres$direction=="up"))
+table(res_table_thres$threshold, res_table_thres$direction)
+
+##to plot the VolcanoPlot of DEG between Immune OL and OL
+EnhancedVolcano(res_table_thres,
+    lab = res_table_thres$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 0.05,  ylim = c(0,5),
+    selectLab = c("ATP8B4","PALD1","CYBB"),
+    drawConnectors = TRUE ,legendPosition = 'right',title = NULL,
+    subtitle = NULL,
+    col=c('black', 'black', 'black', 'red3')) + NoLegend()
+```
+
+```{r Figure 5H}
+##calculate DEG across age groups in Microglia subset
+DefaultAssay(Microglia) <- "RNA"
+Microglia <- SetIdent(Microglia, value = Microglia@meta.data$dev.group)
+Microglia_age_DEG <- FindAllMarkers(Microglia, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract DEG of each age group from Microglia_age_DEG and make a list:
+list <- c("Fetal", "Infant", "Child", "Adolescent", "Adult")
+
+#get the GO Biological Process
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = rownames(eval(parse(text = x))),
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtoname)
+}
+)
+
+#GO Top5 Heatmap
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+df <- GO[[x]]
+df <- df[df$p.adjust < 0.05,]
+df <- df[order(df$p.adjust, decreasing = FALSE),]
+desc <- df$Description
+desc <- desc[1:5]
+return(desc)
+}
+)
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <-lapply(list, function(age){
+  Desc.df[age] <- 0
+  Cell.Type.Desc.df <- data.frame(GO[[age]])
+  Cell.Type.Desc.df$qvalue.scaled <- -log(Cell.Type.Desc.df$qvalue)
+  sig <-data.frame(Cell.Type.Desc.df[Cell.Type.Desc.df$p.adjust < 0.05,]) 
+  sig <- sig[order(sig$p.adjust, decreasing = F),]
+  Desc.df[sig$Description,age]<- Cell.Type.Desc.df[Cell.Type.Desc.df$Description %in% sig$Description, "qvalue.scaled"]
+  Desc.df <- Desc.df[unique(Desc),] 
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  return(Desc.df)
+  })
+df2 <- data.frame(cols)
+matrix_GO <- as.matrix(df2)
+colnames(matrix_GO) <- colnames(df2)
+rownames(matrix_GO) <- unique(Desc)
+matrix_GO = t(apply(df2, 1, scale))
+
+# Annotation
+AnnoDF <- data.frame(c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+colnames(AnnoDF) <- c("Age")
+AnnoDF$Age <- factor(AnnoDF$Age, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Age = c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")))
+
+#Draw GO heatmap
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE, row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_heatmap_legend = F)
+draw(plot_GO, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+
+
+
+
+
+

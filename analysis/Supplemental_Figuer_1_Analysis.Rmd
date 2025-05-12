@@ -1,0 +1,102 @@
+---
+title: "Supplemental_Figuer_1_Analysis"
+author: "Sheldon Ding"
+date: "2025-03-21"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r set color for cell type and age}
+#cell type
+cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", "Motor Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+
+#age
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+```
+
+
+###Supplemental Figure 1
+```{r Supplemental Figure 1A}
+##to plot canonical markers used for cell type classification of clusters on ViolinPlot
+canocical_marker_list <- c("FOXJ1","PIFO","DNAH7","SOX2", "YAP1","FABP7","TNC","SOX2", "CENPF","TOP2A","PAX3","HOXB3","DCX", "MAP2","TUBB3","STMN2","RBFOX3","AQP4","ALDH1L1","PDGFRA","OLIG2","BCAS1","SOX10","PLP1","TCF7L2","MYRF","PLP1","MBP","CNP","MOBP","LUM","PTPRC","P2RY12","PECAM1","SLC4A1", "GYPA","PDGFRB")
+DefaultAssay(sobj) <- "RNA"
+VlnPlot(sobj, features = unique(list), 
+          group.by = "Cell_Type_General", stack = T, fill.by = "ident", flip = F, cols = cellcolor)
+```
+
+```{r Supplemental Figure 1B}
+#custom cell cycle genes list (for justification please see the main article)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+g2m.genes <- subset(g2m.genes, !(g2m.genes %in% c('ANLN','PSRC1','CKAP5', 'TUBB4B')))
+
+#calculate the cell cycle/phase
+DefaultAssay(sobj) <- "RNA"
+sobj <- NormalizeData(sobj)
+sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+
+#assign color to each phase
+phasecolor <- c("G1" = "#E69F00", "S" = "#56B4E9", "G2M" = "#009E73", "Undecided" = "#F0E442")
+
+##to plot phase proportion in each cell type on BarPlot
+ggplot(df1, aes(x = Cell_Type_General, y = freq, fill = Phase)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("Cell_Type_General") + ylab("Proportion") +  theme_classic() + 
+  scale_fill_manual(values = phasecolor) + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=0.5)) + 
+  scale_y_continuous(expand = c(0, 0))
+```
+
+```{r Supplemental Figure 1C}
+##compute the GC content for each peak
+DefaultAssay(sobj) <- "ATAC"
+sobj <- RegionStats(sobj, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+#link peaks to genes
+sobj <- LinkPeaks(
+  object = sobj,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  genes.use = "FBXO17")
+
+##to visualize open peaks, RNA expression and links on CoveragePlot
+CoveragePlot(
+  object = sobj,
+  region = "FBXO17",
+  features = "FBXO17",
+  group.by = "dev.group",
+  expression.assay = "RNA",
+  extend.upstream = 100000,
+  extend.downstream = 20000) & scale_fill_manual(values = devcolor) & theme(
+  panel.background = element_rect(fill = "#D3D3D3",
+                                colour = "#D3D3D3"))
+```
+
+
+
+
+
+
+
+
+
+
