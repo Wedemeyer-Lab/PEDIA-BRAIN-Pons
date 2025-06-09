@@ -66,76 +66,74 @@ FeaturePlot(OL_harmony, features = c("PDGFRA","PLP1", "MBP","C10orf90","CSPG4","
 ```
 
 ```{r Supplemental Figure 4C}
-##calculate the DAP in each subcluster
-DefaultAssay(OL_harmony) <- "ATAC"
-OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$Subcluster)
-OL_harmony_subcluster_DAP <- FindAllMarkers(OL_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+# to plot ratios of oligodendrocyte subtypes in each age group
+OL_harmony@meta.data %>% group_by(Subcluster, dev.group) %>% summarise(n = n()) %>% group_by(dev.group) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
 
-#extract the DAP in each subcluster and make a list
-OL_harmony_subcluster_DAP_list <- list(Early_OL_DAP,RBFOX1_OL_DAP,OPALIN_OL_DAP)
-
-#run the rGreat analysis
-OL_harmony_subcluster_DAP_list <- lapply(OL_harmony_subcluster_DAP_list, function(x) { x <- x %>%
-  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
-x$start <- as.numeric(x$start)
-x$end <- as.numeric(x$end)
-x$strand <- c("*")
-return(x)})
-g.OL_harmony_subcluster_DAP_list <- lapply(OL_harmony_subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
-  seqnames = x$seqnames,
-  ranges = IRanges(start = x$start,
-                   end = x$end
-  ),
-  strand = x$strand,
-  id = x$cluster,
-  rank = x$avg_log2FC,
-  adjust = x$p_val_adj)
-return(x)})
-
-#rGreat analysis for computing the differenet pathway based on DAP
-r.OL_harmony_subcluster_DAP_list <- rGREAT::great(g.OL_harmony_subcluster_DAP_list,
-                        gene_sets = "msigdb:C5:GO:BP",
-                        tss_source = "hg38"
-                        )
-ETable.subcluster.list <- rGREAT::getEnrichmentTable(r.OL_harmony_subcluster_DAP_list)
-
-#extract GO pathway for RBFOX1
-RGA.RBFOX1 <- ETable.subcluster.list[[2]]
-RGA.RBFOX1_gene_names <- unstrsplit(RGA.RBFOX1$annotated_genes, sep = " ")
-RGA.RBFOX1_gene_names <- scan(text = RGA.RBFOX1_gene_names, what = "")
-
-RBFOX1 <- enricher(gene = RGA.RBFOX1_gene_names,
-              pvalueCutoff = 0.05,
-              pAdjustMethod = "BH",
-              minGSSize = 15,
-              maxGSSize = 1000,
-              qvalueCutoff = 0.2,
-              TERM2GENE = GOtogene,
-              TERM2NAME = GOtoname)
-
-##to plot top expressed biological processes for RBFOX1+ oligodendrocyte clusters on DotPlot
-dotplot(RBFOX1, showCategory=20)
+##to plot cell type composition difference between "Fetal" and "Postnatal" on BarPlot
+ggplot(df1, aes(x = dev.group, y = freq, fill = Subcluster)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("dev.group") + ylab("Proportion") +
+  scale_fill_manual(values = OL_subcluster_color) +
+    scale_y_continuous(expand = c(0, 0)) +
+  theme_classic()
 ```
 
 ```{r Supplemental Figure 4D}
-RGA.OPALIN <- ETable.subcluster.list[[3]]
-RGA.OPALIN_gene_names <- unstrsplit(RGA.OPALIN$annotated_genes, sep = " ")
-RGA.OPALIN_gene_names <- scan(text = RGA.OPALIN_gene_names, what = "")
+##Load the genesets
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 
-OPALIN <- enricher(gene = RGA.OPALIN_gene_names,
-              pvalueCutoff = 0.05,
-              pAdjustMethod = "BH",
-              minGSSize = 15,
-              maxGSSize = 1000,
-              qvalueCutoff = 0.2,
-              TERM2GENE = GOtogene,
-              TERM2NAME = GOtoname)
+# For C5 gene ontology genesets
+C5genesets <- msigdbr(species = "Homo sapiens", category = "C5")
+C5togene <- C5genesets[,c("gs_exact_source","gene_symbol")]
+C5toname <- C5genesets[,c("gs_exact_source","gs_name")]
 
-##to plot top expressed biological processes for OPALIN+ oligodendrocyte clusters on DotPlot
-dotplot(OPALIN, showCategory=20)
+# For GO Biological Process
+GOgenesets <- subset(C5genesets, subset=C5genesets[,"gs_subcat"]=="GO:BP")
+GOtogene <- GOgenesets[,c("gs_exact_source","gene_symbol")]
+GOtoname <- GOgenesets[,c("gs_exact_source","gs_name")]
+
+# read in RBFOX1 subcluster DEG and OPALIN subcluster DEG 
+
+# create a DEG of the list
+list <- c("OPALIN_RBFOX1_DEG","RBFOX1_OPALIN_DEG")
+
+# GO Analysis
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = rownames(eval(parse(text = x))),
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtonam
+}
+)
+  
+# to plot TOP10 pathway of OPLIN subcluster on dotplot
+dotplot(
+  GO[[1]],
+  x = "GeneRatio",
+  color = "p.adjust",
+  showCategory = 10)
 ```
 
 ```{r Supplemental Figure 4E}
+# to plot TOP10 pathway of OPLIN subcluster on dotplot
+dotplot(
+  GO[[1]],
+  x = "GeneRatio",
+  color = "p.adjust",
+  showCategory = 10)
+```
+
+```{r  Supplemental Figure 4F}
+#Inserted a table using already calculated number. No codes were used.
+```
+
+```{r Supplemental Figure 4G}
 ##calculate the DAP in each age group
 DefaultAssay(OL_harmony) <- "ATAC"
 OL_harmony <- SetIdent(OL_harmony, value = OL_harmony@meta.data$dev.group)
@@ -219,8 +217,25 @@ plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE
 draw(plot_GO)
 ```
 
-```{r Supplemental Figure 4E}
+```{r Supplemental Figure 4H}
+# read in Immune OL (Immune subset) subcluster DEG
 
+# GO Analysis
+Immune_OL_GO <- enricher(gene = Immune_OL@genes,
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtonam)
+
+# to plot TOP10 pathway of Immune OL subcluster on dotplot
+dotplot(
+  Immune_OL_GO,
+  x = "GeneRatio",
+  color = "p.adjust",
+  showCategory = 10)
 ```
 
 

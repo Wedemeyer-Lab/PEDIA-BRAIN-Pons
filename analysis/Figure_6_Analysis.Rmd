@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-# Generate cellchat objects for each dura sample
+# Generate cellchat objects for each sample 
 library(dplyr)
 library(CellChat)
 library(ggplot2)                  
@@ -219,7 +219,6 @@ plotNetCentralityMatScatter <- function (mat, shape=NULL, cols) {
 
 # Plot all samples and grades
 include <- which(netCentrality.df$Outgoing>0.5 &
-                   #netCentrality.df$grade %in% c("dura","I","II") &
                    netCentrality.df$Incoming>0.5 &
                    netCentrality.df$count>0)
 length(include)

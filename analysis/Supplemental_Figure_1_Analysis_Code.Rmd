@@ -44,29 +44,6 @@ VlnPlot(sobj, features = unique(list),
 ```
 
 ```{r Supplemental Figure 1B}
-#custom cell cycle genes list (for justification please see the main article)
-s.genes <- cc.genes$s.genes
-g2m.genes <- cc.genes$g2m.genes
-g2m.genes <- subset(g2m.genes, !(g2m.genes %in% c('ANLN','PSRC1','CKAP5', 'TUBB4B')))
-
-#calculate the cell cycle/phase
-DefaultAssay(sobj) <- "RNA"
-sobj <- NormalizeData(sobj)
-sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
-sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
-
-#assign color to each phase
-phasecolor <- c("G1" = "#E69F00", "S" = "#56B4E9", "G2M" = "#009E73", "Undecided" = "#F0E442")
-
-##to plot phase proportion in each cell type on BarPlot
-ggplot(df1, aes(x = Cell_Type_General, y = freq, fill = Phase)) +
-  geom_bar(stat = "identity", width = 0.9) +
-  xlab("Cell_Type_General") + ylab("Proportion") +  theme_classic() + 
-  scale_fill_manual(values = phasecolor) + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=0.5)) + 
-  scale_y_continuous(expand = c(0, 0))
-```
-
-```{r Supplemental Figure 1C}
 ##compute the GC content for each peak
 DefaultAssay(sobj) <- "ATAC"
 sobj <- RegionStats(sobj, genome = BSgenome.Hsapiens.UCSC.hg38)

@@ -1,0 +1,126 @@
+# Merge Projects
+
+```{r}
+# Load packages
+library(GenomeInfoDb)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(readxl)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(JASPAR2020) 
+library(TFBSTools)
+library(harmony)
+set.seed(6)
+```
+
+
+```{r}
+input.path <- "output/objects/"
+out.base <- "output/objects"
+```
+
+```{r}
+# merge fetal, pediatric, adult
+fetal <- readRDS(paste0(input.path, "objects/fetal_multi/lists/sobj.list.scrub.rds"))
+pediatric <- readRDS(paste0(input.path, "objects/pediatric_multi/lists/sobj.list.scrub.rds"))
+adult <- readRDS(paste0(input.path, "objects/adult_multi/lists/sobj.list.scrub.rds"))
+```
+
+```{r}
+for (i in 1:length(fetal)) {
+  f <- fetal[[i]]
+  print(paste0("The initial default assay for ", names(fetal)[i], " is: ", DefaultAssay(f)))
+  DefaultAssay(f) <- "RNA"
+  print(paste0("The updated default assay for ", names(fetal)[i], " is: ", DefaultAssay(f)))
+  f@assays$peaksMACS2 <- NULL
+  fetal[[i]] <- f
+}
+
+for (i in 1:length(adult)) {
+  f <- adult[[i]]
+  print(paste0("The initial default assay for ", names(adult)[i], " is: ", DefaultAssay(f)))
+  DefaultAssay(f) <- "RNA"
+  print(paste0("The updated default assay for ", names(adult)[i], " is: ", DefaultAssay(f)))
+  f@assays$peaksMACS2 <- NULL
+  adult[[i]] <- f
+}
+
+for (i in 1:length(pediatric)) {
+  f <- pediatric[[i]]
+  print(paste0("The initial default assay for ", names(pediatric)[i], " is: ", DefaultAssay(f)))
+  DefaultAssay(f) <- "RNA"
+  print(paste0("The updated default assay for ", names(pediatric)[i], " is: ", DefaultAssay(f)))
+  f@assays$peaksMACS2 <- NULL
+  pediatric[[i]] <- f
+}
+
+sobj.list <- c(fetal, pediatric, adult)
+
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+source("code/multiomeFunctions.R")
+
+# merged qc
+dir.create(paste0(out.base, "/QC"))
+sobj.merged <- plotQC(sobj = sobj.merged, out = paste0(out.base, "/QC"), merged = TRUE, sample = NULL, sample.column = NULL)
+# Assign QC cutoffs and subset
+sobj.merged <- subset(sobj.merged,
+                      subset =
+                        TSS.enrichment > 1.5 &
+                        nucleosome_signal < 2.5 &
+                        blacklist_ratio < 0.05 &
+                        nFeature_ATAC < 40000 &
+                        nCount_ATAC < 100000 &
+                        nFeature_RNA < 8000 &
+                        nCount_RNA < 50000 &
+                        percent.mt < 20 &
+                        Predicted_Doublets == "Singlet")
+
+
+# Integrate using Harmony
+# Perform log-normalization and feature selection, as well as SCT normalization on global object
+DefaultAssay(sobj.merged) <- "RNA"
+sobj.merged <- sobj.merged %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+# Calculate PCs using variable features determined by SCTransform (3000 by default)
+sobj.merged <- RunPCA(sobj.merged, assay = "SCT", npcs = 50)
+# Integrate with Harmony
+
+sobj.harmony <- RunHarmony(sobj.merged,
+                           group.by.vars = c("sample_id"),
+                           reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+
+DefaultAssay(sobj.harmony) <- "ATAC"
+sobj.harmony <- RunTFIDF(sobj.harmony)
+sobj.harmony <- FindTopFeatures(sobj.harmony, min.cutoff = 'q0')
+sobj.harmony <- RunSVD(sobj.harmony)
+sobj.harmony <- RunUMAP(sobj.harmony, dims = 2:50, reduction = 'lsi')
+sobj.harmony <- RunHarmony(object = sobj.harmony, group.by.vars = c('sample_id'),
+                           reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+
+# Now find clusters using the seurat object normalized with harmony
+
+DefaultAssay(sobj.harmony) <- "SCT"
+
+sobj.harmony <- sobj.harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+# same but for atac
+DefaultAssay(sobj.harmony) <- "ATAC"
+sobj.harmony <- RunUMAP(sobj.harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+```
+
+
+

@@ -1,0 +1,632 @@
+---
+title: "Supplemental_Figuer_2_Analysis"
+author: "Sheldon Ding"
+date: "2025-03-21"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(openxlsx) 
+library(harmony)
+library(clustree)
+library(rGREAT)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(AnnotationHub)
+library(TFBSTools)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(IRanges)
+library(Biostrings)
+library(openxlsx)
+library(biomaRt)
+library(DESeq2)
+library(grid)
+library(SeuratWrappers)
+library(monocle3)
+library(EnhancedVolcano)
+library(SeuratWrappers)
+library(monocle3)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+RGL_Astrocyte_harmony <- readRDS("/objects/RGL_Astrocyte_harmony.rds")
+```
+
+```{r set color for cell type and age}
+#cell type
+RGL_Astrocyte_subcluster_color = c("ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", "ROBO2 Astrocyte" = "#FFA500","SEMA3E Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#BDC3C7")
+
+#age
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+```
+
+
+###Supplemental Figure 2
+```{r Supplemental Figure 2A}
+#set active identity to SCT_snn_res.0.6
+RGL_Astrocyte_harmony <- SetIdent(RGL_Astrocyte_harmony, value = RGL_Astrocyte_harmony@meta.data$SCT_snn_res.0.6)
+
+##to plot cluster on RNA DimPlot
+DimPlot(RGL_Astrocyte_harmony, label = F, reduction = "umap.rna", label = T) + NoLegend()
+```
+
+```{r Supplemental Figure 2B}
+#set active identity to subcluster
+RGL_Astrocyte_harmony <- SetIdent(RGL_Astrocyte_harmony, value = RGL_Astrocyte_harmony@meta.data$Subcluster)
+
+##to plot subcluster on ATAC DimPlot
+DimPlot(RGL_Astrocyte_harmony, label = F, reduction = "umap.rna", label = F)
+```
+
+```{r Supplemental Figure 2C}
+##to plot markers differentiating assigned subclusters on FeaturePlot
+DefaultAssay(RGL_Astrocyte_harmony) <- "RNA"
+FeaturePlot(RGL_Astrocyte_harmony, features = c("SOX2", "FABP7","GRIN2A","AQP1","GFAP","ALDH1L1","ROBO2","SLIT2", "SEMA3E"), keep.scale = "all")
+```
+
+```{r Supplemental Figure 2D}
+##we performed pseudotime analysis using Monocle 3 package
+##please see Monocle 3 website for official tutorial for your own resaerch needs
+
+#transform the seurat object into a cds object for monocle to work
+cds <- as.cell_data_set(RGL_Astrocyte_harmony)
+colData(cds)
+fData(cds)
+rownames(fData(cds))[1:10]
+fData(cds)$gene_short_name<-rownames(fData(cds))
+counts(cds)
+
+#create the umap partition and cell embeddings including seurat metadata on cds object
+reacreate.partition<-c(rep(1,length(cds@colData@rownames)))
+reacreate.partition
+names(reacreate.partition)<-cds@colData@rownames
+reacreate.partition<-as.factor(reacreate.partition)
+reacreate.partition
+cds@clusters$UMAP$partitions<-reacreate.partition
+list_cluster<-RGL_Astrocyte_harmony@active.ident
+cds@clusters$UMAP$clusters<-list_cluster
+cds@int_colData@listData$reducedDims$UMAP<-RGL_Astrocyte_harmony@reductions$umap.rna@cell.embeddings
+
+#"learn graph" in order to calculate cell trajectory and pseudotime
+cds<-learn_graph(cds,use_partition = TRUE)
+
+#order cells for pseudotime analysis
+cds <- order_cells(cds)
+
+##to plot pseudotime on RNA DimPlot
+Cell_pseudotime <- plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "ident",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           show_trajectory_graph = FALSE)
+```
+
+```{r Supplemental Figure 2E}
+##calculate the DAP in each subcluster
+DefaultAssay(RGL_Astrocyte_harmony) <- "ATAC"
+RGL_Astrocyte_harmony <- SetIdent(RGL_Astrocyte_harmony, value = RGL_Astrocyte_harmony@meta.data$Subcluster)
+RGL_Astrocyte_harmony_subcluster_DAP <- FindAllMarkers(RGL_Astrocyte_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each subcluster and make a list
+RGL_Astrocyte_Subcluster_DAP_list <- list(ROBO2_Radial_Glia_DAP,SLIT2_Radial_Glia_DAP,ROBO2_Astrocyte_DAP,SEMA3E_Astrocyte_DAP,Oligo_like_Astrocyte_DAP)
+
+#run the rGreat analysis
+RGL_Astrocyte_Subcluster_DAP_list <- lapply(RGL_Astrocyte_Subcluster_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.RGL_Astrocyte_Subcluster_DAP_list <- lapply(RGL_Astrocyte_Subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.RGL_Astrocyte_Subcluster_DAP_list[[1]], g.RGL_Astrocyte_Subcluster_DAP_list[[2]], g.RGL_Astrocyte_Subcluster_DAP_list[[3]], g.RGL_Astrocyte_Subcluster_DAP_list[[4]], g.RGL_Astrocyte_Subcluster_DAP_list[[5]])
+
+#visualize the unique DAP in each subcluster using VennDiagram
+makeVennDiagram(laps_Full, NameOfPeaks = c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte"), fill=c("ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", "ROBO2 Astrocyte" = "#FFA500","SEMA3E Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#BDC3C7"))
+```
+
+```{r Supplemental Figure 2F}
+##calculate the DAP in each age group
+DefaultAssay(RGL_Astrocyte_harmony) <- "ATAC"
+RGL_Astrocyte_harmony <- SetIdent(RGL_Astrocyte_harmony, value = RGL_Astrocyte_harmony@meta.data$dev.group)
+RGL_Astrocyte_harmony_age_DAP <- FindAllMarkers(RGL_Astrocyte_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#extract the DAP in each subcluster and make a list
+RGL_Astrocyte_age_DAP_list <- list(Fetal_DAP, Infant_DAP, Child_DAP, Adolescent_DAP, Adult_DAP)
+
+#run the rGreat analysis
+RGL_Astrocyte_age_DAP_list <- lapply(RGL_Astrocyte_age_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.RGL_Astrocyte_age_DAP_list <- lapply(RGL_Astrocyte_age_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.RGL_Astrocyte_age_DAP_list[[1]], g.RGL_Astrocyte_age_DAP_list[[2]], g.RGL_Astrocyte_age_DAP_list[[3]], g.RGL_Astrocyte_age_DAP_list[[4]], g.RGL_Astrocyte_age_DAP_list[[5]])
+
+#visualize the unique DAP in each subcluster using VennDiagram
+makeVennDiagram(laps_Full, NameOfPeaks = c("Fetal", "Infant", "Child", "Adolescent", "Adult"), fill=c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921"))
+```
+
+```{r Supplemental Figure 2G}
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(openxlsx) 
+library(harmony)
+library(clustree)
+library(motifmatchr)
+library(JASPAR2024)
+library(TFBSTools)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(ChIPpeakAnno)
+set.seed(6)
+jaspar <- JASPAR2024()
+sq24 <- RSQLite::dbConnect(RSQLite::SQLite(), db(jaspar))
+# RGs+Astros
+ROBO2_Radial_Glia <- read.xlsx("output/tables/motif/RGL_Astrocyte Enriched Motif/ROBO2 Radial Glia.xlsx", rowNames = T)
+SLIT2_Radial_Glia <- read.xlsx("output/tables/motif/RGL_Astrocyte Enriched Motif/SLIT2 Radial Glia.xlsx", rowNames = T)
+ROBO2_Astrocyte <- read.xlsx("output/tables/motif/RGL_Astrocyte Enriched Motif/ROBO2 Astrocyte.xlsx", rowNames = T)
+SEMA3E_Astrocyte <- read.xlsx("output/tables/motif/RGL_Astrocyte Enriched Motif/SEMA3E Astrocyte.xlsx", rowNames = T)
+Oligo_like_Astrocyte <- read.xlsx("output/tables/motif/RGL_Astrocyte Enriched Motif/Oligo-like Astrocyte.xlsx", rowNames = T)
+
+
+#make a list of DAP in each subcluster
+RGL_Astrocyte_Subcluster_DAP_list <- list(ROBO2_Radial_Glia,SLIT2_Radial_Glia,ROBO2_Astrocyte,SEMA3E_Astrocyte,Oligo_like_Astrocyte)
+
+names(RGL_Astrocyte_Subcluster_DAP_list) <- c("ROBO2_Radial_Glia", "SLIT2_Radial_Glia", "ROBO2_Astrocyte","SEMA3E_Astrocyte","Oligo_like_Astrocyte")
+
+#run the rGreat analysis for unique peaks
+RGL_Astrocyte_Subcluster_DAP_list <- lapply(RGL_Astrocyte_Subcluster_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.RGL_Astrocyte_Subcluster_DAP_list <- lapply(RGL_Astrocyte_Subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.RGL_Astrocyte_Subcluster_DAP_list[[1]], g.RGL_Astrocyte_Subcluster_DAP_list[[2]], g.RGL_Astrocyte_Subcluster_DAP_list[[3]], g.RGL_Astrocyte_Subcluster_DAP_list[[4]], g.RGL_Astrocyte_Subcluster_DAP_list[[5]])
+
+
+#extract unique DAP in each subcluster
+RGL_Astrocyte_unique <- data.frame(laps_Full[["uniquePeaks"]])
+
+
+#read in DAP in each subcluster
+RG_like_OPC <- read.xlsx("output/tables/motif/OPC Enriched Motif/RG-like OPC.xlsx", rowNames = T)
+OPC <- read.xlsx("output/tables/motif/OPC Enriched Motif/OPC.xlsx", rowNames = T)
+COP <- read.xlsx("output/tables/motif/OPC Enriched Motif/COP.xlsx", rowNames = T)
+Astrocyte_like_OPC <- read.xlsx("output/tables/motif/OPC Enriched Motif/Astrocyte-like OPC.xlsx", rowNames = T)
+#make a list of DAP in each subcluster
+OPC_harmony_subcluster_DAP_list <- list(RG_like_OPC,OPC,COP,Astrocyte_like_OPC)
+names(OPC_harmony_subcluster_DAP_list) <- c("RG-like_OPC", "OPC", "COP","Astrocyte-like_OPC")
+#run the rGreat analysis for unique peaks
+OPC_harmony_subcluster_DAP_list <- lapply(OPC_harmony_subcluster_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OPC_harmony_subcluster_DAP_list <- lapply(OPC_harmony_subcluster_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.OPC_harmony_subcluster_DAP_list[[1]], g.OPC_harmony_subcluster_DAP_list[[2]], g.OPC_harmony_subcluster_DAP_list[[3]], g.OPC_harmony_subcluster_DAP_list[[4]])
+
+
+#extract unique DAP in each subcluster
+OPC_unique <- data.frame(laps_Full[["uniquePeaks"]])
+
+#read in DAP in each subcluster
+Early_Oligo <- read.xlsx("output/tables/motif/Oligo Enriched Motif/EarlyOligo_DAP.xlsx", rowNames = T)
+RBFOX1 <- read.xlsx("output/tables/motif/Oligo Enriched Motif/RBFOX1Oligo_DAP.xlsx", rowNames = T)
+OPALIN <- read.xlsx("output/tables/motif/Oligo Enriched Motif/OPALINOligo_DAP.xlsx", rowNames = T)
+
+OL_harmony_subcluster_DAP_list <- list(Early_Oligo,RBFOX1,OPALIN)
+
+cluster = c(gsub("_","", names(RGL_Astrocyte_Subcluster_DAP_list),
+                           names(OPC_harmony_subcluster_DAP_list)), 
+                           "Early OL", "RBFOX1 OL","OPALIN OL")
+df0<-rbind(data.frame(table(RGL_Astrocyte_unique$id)),data.frame(table(OPC_unique$id)), data.frame(Var1 = c("Early OL", "RBFOX1 OL", "OPALIN OL"), Freq = c(3,66,3))) 
+df0$Var1 <- gsub("Oligo", "OL", df0$Var1)
+rownames(df0) <- df0$Var1
+sobj <- readRDS("output/objects/atlas_final.RDS")
+
+df1 <- data.frame(num_cells = table(sobj$Subtype))
+rownames(df1) <- as.character(df1$num_cells.Var1)
+
+colnames(df1)[2] <- "num_cells"
+colnames(df1)[1] <- "cluster" 
+df1 <- df1[rownames(df1) %in% df0$Var1,]
+df1$num_unique_peaks<- df0[rownames(df1),]$Freq
+
+df1$cluster <- factor(df1$cluster, levels = names(subtypecolor))
+ggplot(df1, aes(y=num_unique_peaks,x=num_cells, color = cluster)) + geom_point() + scale_color_manual(values = subtypecolor)+ggtitle("Number of Unique Peaks vs Number of Cells in Cluster")
+
+
+df1 <- data.frame(num_cells = table(sobj$Cell_Type))
+colnames(df1)[2] <- "num_cells"
+colnames(df1)[1] <- "cluster" 
+df1$avg_peaks <- 0
+for (cluster in df1$cluster) {
+  df1$avg_peaks[df1$cluster == cluster]<-sobj@meta.data$nFeature_ATAC[sobj$Cell_Type == cluster] %>% 
+    mean() %>%
+    round()
+}
+
+df1$cluster <- factor(df1$cluster, levels = names(cellcolor))
+
+ggplot(df1, aes(y=avg_peaks,x=num_cells, color = cluster)) + 
+  geom_point() + scale_color_manual(values = cellcolor)+
+  ggtitle("Number of Peaks vs Number of Cells in Cluster") 
+
+
+
+# by groups
+
+group1<- c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "SEMA3E Astrocyte",
+           "ROBO2 Astrocyte", "OL-like Astrocyte")
+group2 <- c("RG-like OPC", "OPC", "COP", "Astrocyte-like OPC")
+group3 <- c("Early OL", "OPALIN OL", "RBFOX1 OL")
+group4 <- c(group2, group3)
+
+library(tidyverse)
+groups <- list(group1,group2,group3,group4)
+tidy1.list <- list()
+tidy2.list <- list()
+
+for (i in 1:length(groups)) {
+  group = groups[[i]]
+  df0<-rbind(data.frame(table(RGL_Astrocyte_unique$id)),data.frame(table(OPC_unique$id)), data.frame(Var1 = c("Early OL", "RBFOX1 OL", "OPALIN OL"), Freq = c(3,66,3))) 
+  df0$Var1 <- gsub("Oligo", "OL", df0$Var1)
+  rownames(df0) <- df0$Var1
+  df1 <- data.frame(num_cells = table(sobj$Subtype))
+  rownames(df1) <- as.character(df1$num_cells.Var1)
+  
+  colnames(df1)[2] <- "num_cells"
+  colnames(df1)[1] <- "cluster" 
+  df1 <- df1[rownames(df1) %in% df0$Var1,]
+  df1$num_unique_peaks<- df0[rownames(df1),]$Freq
+  
+  df1$cluster <- factor(df1$cluster, levels = names(subtypecolor))
+  df1 <- subset(df1, cluster %in% group)
+  p1<-ggplot(df1, aes(y=num_unique_peaks,x=num_cells)) + 
+    geom_point(aes(color = cluster)) + 
+    scale_color_manual(values = subtypecolor)+
+    ggtitle("Number of Unique Peaks per Cluster") +
+    geom_smooth(method=lm, se=FALSE)
+  print(paste("output/tables/SuppFig2Stats/group",i, "num_unique_peaks"))
+  print(summary(lm(df1$num_unique_peaks~df1$num_cells)))
+  fit.df<-broom::tidy(lm(df1$num_unique_peaks~df1$num_cells))
+  write.csv(fit.df,paste0("~/group",i,"unique.csv"))
+  df1 <- data.frame(num_cells = table(sobj$Subtype))
+  colnames(df1)[2] <- "num_cells"
+  colnames(df1)[1] <- "cluster" 
+  df1$avg_peaks <- 0
+  for (cluster in df1$cluster) {
+    df1$avg_peaks[df1$cluster == cluster]<-sobj@meta.data$nFeature_ATAC[sobj$Subtype == cluster] %>% 
+      mean() %>%
+      round()
+  }
+
+df1$cluster <- factor(df1$cluster, levels = names(subtypecolor))
+df1 <- subset(df1, cluster %in% group)
+p2<-ggplot(df1, aes(y=avg_peaks,x=num_cells)) + 
+  geom_point(aes(color = cluster)) + scale_color_manual(values = subtypecolor)+
+  ggtitle("Number of Peaks per Cluster")+geom_smooth(method=lm, se=FALSE)
+print(paste(group, "num_peaks"))
+print(summary(lm(df1$avg_peaks~df1$num_cells)))
+fit2.df<-broom::tidy(lm(df1$avg_peaks~df1$num_cells))
+write.csv(fit2.df,paste0("output/tables/SuppFig2Stats/group",i,"nPeaks.csv"))
+
+p1+p2
+ggsave(paste0("output/figure/SuppFig2G/group",i,".pdf"),height = 3, width=11, units="in")
+}
+
+# OPC and OL by dev groups
+
+OL_Fetal <- read.xlsx("output/tables/motif/Unique_Peaks/OL_Fetal_Unique_Filtered_Peaks.xlsx", rowNames = T)
+OL_Infant <- read.xlsx("output/tables/motif/Unique_Peaks/OL_Infant_Unique_Filtered_Peaks.xlsx", rowNames = T)
+OL_Child <- read.xlsx("output/tables/motif/Unique_Peaks/OL_Child_Unique_Filtered_Peaks.xlsx", rowNames = T)
+OL_Adolescent <- read.xlsx("output/tables/motif/Unique_Peaks/OL_Adolescent_Unique_Filtered_Peaks.xlsx", rowNames = T)
+OL_Adult <- read.xlsx("output/tables/motif/Unique_Peaks//OL_Adult_Unique_Filtered_Peaks.xlsx", rowNames = T)
+
+OPC_Fetal <- read.xlsx("output/tables/motif/Unique_Peaks/OPC_Fetal_Unique_Filtered_Peaks.xlsx", rowNames = T)
+OPC_Infant <- read.xlsx("output/tables/motif/Unique_Peaks/OPC_Infant_Unique_Filtered_Peaks.xlsx", rowNames = T)
+OPC_Adolescent <- read.xlsx("output/tables/motif/Unique_Peaks/OPC_Adolescent_Unique_Filtered_Peaks.xlsx", rowNames = T)
+
+OL_DAP_list <- list(OL_Fetal,OL_Infant,OL_Child,OL_Adolescent,OL_Adult)
+names(OL_DAP_list) <- c("OL_Fetal", "OL_Infant","OL_Child", "OL_Adolescent","OL_Adult")
+#run the rGreat analysis for unique peaks
+OL_DAP_list <- lapply(OL_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OL_DAP_list <- lapply(OL_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.OL_DAP_list[[1]], g.OL_DAP_list[[2]], g.OL_DAP_list[[3]], g.OL_DAP_list[[4]], g.OL_DAP_list[[5]])
+
+
+#extract unique DAP in each subcluster
+OPC_unique <- data.frame(laps_Full[["uniquePeaks"]])
+
+
+OPC_DAP_list <- list(OPC_Fetal,OPC_Infant,OPC_Adolescent)
+names(OPC_DAP_list) <- c("OPC_Fetal", "OPC_Infant", "OPC_Adolescent")
+#run the rGreat analysis for unique peaks
+OPC_DAP_list <- lapply(OPC_DAP_list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+g.OPC_DAP_list <- lapply(OPC_DAP_list, function(x) {x <- GenomicRanges::GRanges(
+  seqnames = x$seqnames,
+  ranges = IRanges(start = x$start,
+                   end = x$end
+  ),
+  strand = x$strand,
+  id = x$cluster,
+  rank = x$avg_log2FC,
+  adjust = x$p_val_adj)
+return(x)})
+
+#calculate the unique DAP in each subcluster
+laps_Full <- findOverlapsOfPeaks(g.OPC_DAP_list[[1]], g.OPC_DAP_list[[2]], g.OPC_DAP_list[[3]])
+
+
+#extract unique DAP in each subcluster
+OPC_unique <- data.frame(laps_Full[["uniquePeaks"]])
+
+group1<- c("OPC_Fetal", "OPC_Infant","OPC_Adolescent")
+group2 <- c("OL_Fetal", "OL_Infant","OL_Child", "OL_Adolescent","OL_Adult")
+groups <- list(group1,group2)
+tidy1.list <- list()
+tidy2.list <- list()
+Development = c("#0D0887", "#7E03A8", "#CC4678", "#F89441", "#F0F921")
+names(Development) = c("Fetal", "Infant", "Child",
+                       "Adolescent","Adult")
+for (i in 1:length(groups)) {
+  group = groups[[i]]
+  df0<-rbind(data.frame(table(OPC_unique$id)),data.frame(table(OL_unique$id)))
+  rownames(df0) <- c(paste0("OPC_",df0$Var1[1:3]), paste0("OL_",df0$Var1[4:8]))
+  df0<-df0[group,]
+  rownames(df0) <- df0$Var1
+  df1 <- data.frame(num_cells = table(sobj$dev.group,sobj$Cell_Type))
+  if (i==1) {
+    df1<-df1[df1$num_cells.Var2 == "OPC",]
+  } else {
+    df1<-df1[df1$num_cells.Var2 == "OL",]
+  }
+  rownames(df1) <- as.character(df1$num_cells.Var1)
+  df1[,2] <- NULL
+  colnames(df1)[2] <- "num_cells"
+  colnames(df1)[1] <- "cluster" 
+  df1 <- df1[rownames(df1) %in% df0$Var1,]
+  df1$num_unique_peaks<- df0[rownames(df1),]$Freq
+  
+  df1$cluster <- factor(df1$cluster, levels = names(Development))
+  #df1 <- subset(df1, cluster %in% group)
+  p1<-ggplot(df1, aes(y=num_unique_peaks,x=num_cells)) + 
+    geom_point(aes(color = cluster)) + 
+    scale_color_manual(values = Development)+
+    ggtitle("Number of Unique Peaks per Cluster") +
+    geom_smooth(method=lm, se=FALSE)
+  print(paste("group",i, "num_unique_peaks"))
+  print(summary(lm(df1$num_unique_peaks~df1$num_cells)))
+  fit.df<-broom::tidy(lm(df1$num_unique_peaks~df1$num_cells))
+  write.csv(fit.df,paste0("output/tables/SuppFig2Stats/group",i,"_dev_unique.csv"))
+  df1 <- data.frame(num_cells = table(sobj$dev.group,sobj$Cell_Type))
+  if (i==1) {
+    df1<-df1[df1$num_cells.Var2 == "OPC",]
+  } else {
+    df1<-df1[df1$num_cells.Var2 == "OL",]
+  }
+  df1[,2] <- NULL
+  colnames(df1)[2] <- "num_cells"
+  colnames(df1)[1] <- "cluster" 
+  df1$avg_peaks <- 0
+  for (cluster in df1$cluster) {
+    df1$avg_peaks[df1$cluster == cluster]<-sobj@meta.data$nFeature_ATAC[sobj$dev.group == cluster] %>% 
+      mean() %>%
+      round()
+  }
+  
+  df1$cluster <- factor(df1$cluster, levels = names(Development))
+  p2<-ggplot(df1, aes(y=avg_peaks,x=num_cells)) + 
+    geom_point(aes(color = cluster)) + scale_color_manual(values = Development)+
+    ggtitle("Number of Peaks per Cluster")+geom_smooth(method=lm, se=FALSE)
+  print(paste(group, "num_peaks"))
+  print(summary(lm(df1$avg_peaks~df1$num_cells)))
+  fit2.df<-broom::tidy(lm(df1$avg_peaks~df1$num_cells))
+  write.csv(fit2.df,paste0("output/tables/SuppFig2Stats/group",i,"_dev_nPeaks.csv"))
+  
+  p1+p2
+  ggsave(paste0("output/figures/SuppFigure2G/group",i,"_dev.pdf"),height = 3, width=11, units="in")
+}
+
+
+# difference in distribution
+OL_Subtype<-table(sobj$Subtype, sobj$dev.group)[c("RBFOX1 OL", "OPALIN OL", "Early OL"),]
+
+chisq.test(OL_Subtype, correct = T)
+
+```
+
+```{r Supplemental Figure 2H}
+#Inserted a table using already calculated number. No codes were used.
+```
+
+```{r Supplemental Figure 2I}
+#rGreat analysis for computing the differenet pathway based on DAP
+r.RGL_Astrocyte_age_DAP_list <- rGREAT::great(g.RGL_Astrocyte_age_DAP_list,
+                        gene_sets = "msigdb:C5:GO:BP",
+                        tss_source = "hg38"
+                        )
+ETable <- rGREAT::getEnrichmentTable(r.RGL_Astrocyte_age_DAP_list)
+
+#get the different pathway of each subcluster from ETable
+GO <- list(ETable.cluster.list[[1]],ETable.cluster.list[[2]],ETable.cluster.list[[3]],ETable.cluster.list[[4]],ETable.cluster.list[[5]])
+list <- c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte")
+
+#make annotation dataframe and DF for heatmap
+AnnoDF <- data.frame(c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte"))
+colnames(AnnoDF) <- c("Subcluster")
+AnnoDF$Subcluster <- factor(AnnoDF$Subcluster, levels = c("ROBO2 Radial Glia", "SLIT2 Radial Glia", "ROBO2 Astrocyte","SEMA3E Astrocyte","OL-like Astrocyte","Undetermined Astrocyte"))
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Subcluster = c("ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", "ROBO2 Astrocyte" = "#FFA500","SEMA3E Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#BDC3C7")))
+
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+df <- GO[[x]]
+df <- df[df$p_value < 0.05,]
+df <- df[order(df$p_value, decreasing = FALSE),]
+desc <- df$id
+desc <- desc[1:5]
+return(desc)
+}
+)
+
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <-lapply(list, function(great){
+  Desc.df[great] <- 0
+  great.Desc.df <- data.frame(GO[[great]])
+  sig <-data.frame(great.Desc.df[great.Desc.df$p_value < 0.05,]) 
+  sig <- sig[order(sig$p_value, decreasing = F),]
+  Desc.df[sig$id,great]<- great.Desc.df[great.Desc.df$id %in% sig$id, "fold_enrichment"]
+  Desc.df <- Desc.df[unique(Desc),] 
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  return(Desc.df)
+  })
+df2 <- data.frame(cols)
+matrix_GO <- as.matrix(df2)
+colnames(matrix_GO) <- colnames(df2)
+rownames(matrix_GO) <- unique(Desc)
+matrix_GO = t(apply(df2, 1, scale))
+
+#to draw GO heatmap
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE
+                       , row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_column_names = TRUE)
+draw(plot_GO)
+```
+
+```{r Supplemental Figure 2J}
+##compute the GC content for each peak
+DefaultAssay(RGL_Astrocyte_harmony) <- "ATAC"
+RGL_Astrocyte_harmony <- RegionStats(RGL_Astrocyte_harmony, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+#link peaks to genes
+RGL_Astrocyte_harmony <- LinkPeaks(
+  object = RGL_Astrocyte_harmony,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  genes.use = "FBXO17")
+
+##to visualize open peaks, RNA expression and links on CoveragePlot
+CoveragePlot(
+  object = RGL_Astrocyte_harmony,
+  region = c("chr3-147396884-147397792"),
+  features = c("ZIC1","ZIC4"),
+  group.by = "dev.group",
+  expression.assay = "RNA",
+  extend.upstream = 20000,
+  extend.downstream = 20000) & scale_fill_manual(values = devcolor) & theme(
+  panel.background = element_rect(fill = "#D3D3D3",
+                                colour = "#D3D3D3"))
+```
+
+
+
+
+
+
+
+
+
+
+
+

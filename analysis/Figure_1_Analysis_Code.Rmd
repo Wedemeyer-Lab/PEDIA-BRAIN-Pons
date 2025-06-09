@@ -111,25 +111,6 @@ DimPlot(sobj, reduction = "umap.rna", label = T, cols = cellcolor)
 ```
 
 ```{r Figure 1B}
-##we customed cell cycle genes (for justification please see the main article)
-s.genes <- cc.genes$s.genes
-g2m.genes <- cc.genes$g2m.genes
-g2m.genes <- subset(g2m.genes, !(g2m.genes %in% c('ANLN','PSRC1','CKAP5', 'TUBB4B')))
-
-##to perform cell cycle/phase calculation
-DefaultAssay(sobj) <- "RNA"
-sobj <- NormalizeData(sobj)
-sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
-sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
-
-#assign colors to different cell cycle/phase
-phasecolor <- c("G1" = "#E69F00", "S" = "#56B4E9", "G2M" = "#009E73", "Undecided" = "#F0E442")
-
-##to plot cell cycle/phase on RNA DimPlot
-DimPlot(sobj, label = F, cols = phasecolor, group.by = "Phase")
-```
-
-```{r Figure 1C}
 ##we performed pseudotime analysis using Monocle 3 package
 ##please see Monocle 3 website for official tutorial for your own resaerch needs
 
@@ -177,10 +158,10 @@ Cell_pseudotime <- plot_cells(cds,
            label_leaves=FALSE,
            label_branch_points=FALSE,
            label_roots = FALSE,
-           trajectory_graph_color = "grey60")
+           show_trajectory_graph = TRUE)
 ```
 
-```{r Figure 1D}
+```{r Figure 1C}
 ##create a metadata of "postnatal" to differetiate "Fetal" and "Postnatal"
 sobj@meta.data$postnatal <- ifelse(sobj@meta.data$orig.ident %in% c("fetal_multiome"), "Fetal", "Postnatal") %>% factor()
 
@@ -204,7 +185,7 @@ DimPlot(sobj, reduction = "umap.rna", split.by = "postnatal",label = F, cols = c
 DimPlot(sobj, reduction = "umap.atac", split.by = "postnatal",label = F, cols = cellcolor)#ATAC
 ```
 
-```{r Figure 1E}
+```{r Figure 1D}
 ##extract metadata of "Cell_Type_General" and "dev.group" for ggplot visualization
 sobj@meta.data %>% group_by(Cell_Type_General, dev.group) %>% summarise(n = n()) %>% group_by(dev.group) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
 

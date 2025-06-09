@@ -26,7 +26,6 @@ library(TFBSTools)
 
 ```{r set working dir}
 set.seed(6)
-getwd()
 ```
 
 ```{r load multiome functions}
@@ -43,7 +42,7 @@ dir.create("output/objects/individual")
 
 # Create Seurat Object
 
-```{r get annotations, warning=FALSE}
+```{r get annotations}
 # get annotation 
 annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
 seqlevelsStyle(annotations) <- 'UCSC'
@@ -52,53 +51,23 @@ genome(annotations) <- "hg38"
 
 ```{r establish paths}
 # set file paths
-input.path <- "data/raw/matrix_files/"
-out.base <- "output"
+input.path <- "data/raw/matrix_files"
+out.base <- "output/objects"
 # get list of sample names
-sample.names <- read.csv("data/metadata/pediatric_multiome_samples.csv",row.names = 1)$sample_names
+sample.names <- list.dirs(input.path, full.names = FALSE, recursive = FALSE)
 ```
-```{r arrange files (only need to run once)}
-# prepare files for analysis
-dir.create("data/raw/matrix_files")
-for (sample in sample.names){
-  dir.create(paste0("data/raw/matrix_files/", sample))
-  dir.create(paste0("data/raw/matrix_files/", sample, "/outs"))
-  dir.create(paste0("data/raw/matrix_files/", sample, "/outs/filtered_feature_bc_matrix"))
-  # features
-  move.and.rename(from = paste0("data/raw/GEO/multiome_snRNAseq_data/GSE287571_filtered_",
-                                    sample,"_features.tsv.gz"),
-                to = paste0("data/raw/matrix_files/", sample,"/outs/filtered_feature_bc_matrix/features.tsv.gz")) 
-  # barcodes
-  move.and.rename(from = paste0("data/raw/GEO/multiome_snRNAseq_data/GSE287571_filtered_",
-                                      sample,"_barcodes.tsv.gz"),
-                  to = paste0("data/raw/matrix_files/", sample,"/outs/filtered_feature_bc_matrix/barcodes.tsv.gz")) 
-  # matrix
-  move.and.rename(from = paste0("data/raw/GEO/multiome_snRNAseq_data/GSE287571_filtered_",
-                                    sample,"_matrix.mtx.gz"), 
-                to = paste0("data/raw/matrix_files/", sample,"/outs/filtered_feature_bc_matrix/matrix.mtx.gz")) 
-  # per_barcode_metrics
-  move.and.rename(from = paste0("data/raw/GEO/multiome_snATACseq_data/GSE287571_",
-                                  sample,"_per_barcode_metrics.csv"),
-              to = paste0("data/raw/matrix_files/", sample,"/outs/per_barcode_metrics.csv")) 
-  # atac fragments
-  move.and.rename(from = paste0("data/raw/GEO/multiome_snATACseq_data/GSE287571_",
-                                  sample,"_atac_fragments.tsv.gz"),
-              to = paste0("data/raw/matrix_files/", sample,"/outs/atac_fragments.tsv.gz")) 
-}
-```
-
 
 ```{r create sobjs}
 # Run create_sobj function
-sobj.list <- lapply(sample.names[1:3], create_sobj, input.path, out.base=paste0(out.base,"/objects"), annotations)
-names(sobj.list) <- sample.names[1:3]
-saveRDS(sobj.list, file = paste0(out.base, "/lists/sobj.list.raw.test.rds"))
+sobj.list <- lapply(sample.names, create_sobj, input.path, out.base=paste0(out.base,"/objects"), annotations)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, file = paste0(out.base, "/lists/sobj.list.raw.rds"))
 print("All saved.")
 ```
 
 ```{r metadata}
 # Get sample metadata
-md <- read_excel("data/metadata/pediatric_multiome_metadata.xlsx")
+md <- read_excel(paste0(out.base,"/DAPH_SampleTracking_Trunc.xlsx"))
 md$race[md$race == "Black or African-American"] <- "African-American"
 rownames(md) <- md$sample
 
@@ -142,8 +111,12 @@ sobj.list <- lapply(sobj.list, plotQC, frag.base.path = input.path, frag.full.pa
 
 ```{r}
 dir.create(paste0(out.base, "/MACS2"))
-sobj.list <-lapply(sobj.list, runMACS2, macs2.path="~/miniconda3/envs/macs2py/bin/macs2", frag.base.path = input.path, frag.full.path = NULL,
-                   out=paste0(out.base, "/MACS2"), group.by="seurat_clusters", sample.column = "sample_id",find.markers=TRUE, annotations=annotations)
+# insert macs2 path
+macs2.path <- ""
+sobj.list <-lapply(sobj.list, runMACS2, macs2.path= macs2.path, frag.base.path = input.path,
+                   frag.full.path = NULL, out=paste0(out.base, "/MACS2"), 
+                   group.by="seurat_clusters", sample.column = "sample_id",
+                   find.markers=TRUE, annotations=annotations)
 ```
 
 ```{r}
@@ -173,26 +146,17 @@ sobj.merged <- plotQC(sobj = sobj.merged, out = paste0(out.base, "/QC/merged"), 
 First, we create a directory full of the features (genes) tab separated value files.
 ```{bash}
 # make genes folder
-mkdir /igm/projects/HD-BAT_Wedemeyer/objects/pediatric_multi/genes
+mkdir output/objects/pediatric_multi/genes
 
-for d in /igm/projects/HD-BAT_Wedemeyer/counts/pediatric_multi/SC0*/; 
+for d in data/raw/SC0*/; 
   do 
     name=$(basename $d)
-    gunzip -c /igm/projects/HD-BAT_Wedemeyer/counts/pediatric_multi/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  >  /igm/projects/HD-BAT_Wedemeyer/objects/pediatric_multi/genes/"$name"_features.tsv
+    gunzip -c data/raw/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  >  output/objects/pediatric_multi/genes/"$name"_features.tsv
   done
 ```
 
 
-Then we run scrublet in python. Be sure to source the conda environment to use before running the script.
-```{bash}
-# run scrublet
-module rm python-2.7.12
-module load python-3.11.4
-python3 /igm/projects/HD-BAT_Wedemeyer/HD-BAT_Functions/scrub.py /igm/projects/HD-BAT_Wedemeyer/objects/pediatric_multi/samples.csv \
-                /igm/projects/HD-BAT_Wedemeyer/counts/pediatric_multi/ \
-                /igm/projects/HD-BAT_Wedemeyer/objects/pediatric_multi/scrub/ \
-                /igm/projects/HD-BAT_Wedemeyer/objects/pediatric_multi/genes/ 
-```
+Then we run scrublet in python (code/scrub.py).
 
 Back to R to add doublet score to metadata.
 ```{r}
@@ -238,28 +202,6 @@ sobj.merged <- sobj.merged %>%
 saveRDS(sobj.merged, file = paste0(out.base, "/objects/merged/sobj.mergedSCT.RDS"))
 ```
 
-```{r}
-# Calculate PCs using variable features determined by SCTransform (3000 by default)
-sobj.merged <- RunPCA(sobj.merged, assay = "SCT", npcs = 50)
-saveRDS(sobj.merged, file = paste0(out.base, "/objects/merged/sobj.mergedPCA.RDS"))
-```
+### Similarly run for adult multiome and fetal multiome
 
-``` {r}
-# Integrate with Harmony
-dir.create(paste0(out.base,"/objects/harmony"))
-sobj.harmony <- RunHarmony(sobj.merged, 
-                           group.by.vars = c("sample_id"), 
-                           reduction = "pca", assay.use = "SCT", reduction.save = "harmony")
-saveRDS(sobj.harmony,paste0(out.base, "/objects/harmony/sobj.harmony.RDS")
-```
 
-```{r}
-# Now find clusters using the seurat object normalized with harmony 
-sobj.harmony <- sobj.harmony  %>% 
-  RunUMAP(reduction = "harmony", assay = "SCT", dims = 1:50) %>% 
-  FindNeighbors(reduction = "harmony") %>%
-  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
-saveRDS(sobj.harmony, "/objects/harmony/sobj.harmony.clustered.RDS")
-```
-
-# Et Cetera

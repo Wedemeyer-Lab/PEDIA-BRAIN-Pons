@@ -632,3 +632,27 @@ OLvsAll$expected
 
 ```
 
+# Extract Metadata and UMAP Coordinates for 3D plots
+
+```{r}
+# load objects
+cancer <-readRDS("output/objects/mapping/cancer_map_to_HD-BAT_dev.group.rds")
+ms<- readRDS("output/objects/mapping/ms_map_to_HD-BAT_dev.group.rds")
+dropseq <- readRDS("output/objects/mapping/dropseq_map_to_HD-BAT_dev_group.rds")
+```
+
+```{r}
+# create object list
+sobj.list <- c(cancer, ms, dropseq)
+names(sobj.list) <- c("cancer","ms","dropseq")
+```
+
+```{r}
+# save metadata and umap coordinates for each disease state
+for (i in 1:3) {
+  sobj<-sobj.list[[i]]
+  write.csv(sobj@meta.data,paste0("output/tables/disease_mapping/" ,names(sobj.list)[i],"_meta.csv"))
+  write.csv(sobj@reductions$ref.umap@cell.embeddings,paste0("output/tables/disease_mapping",names(sobj.list)[i],"_umap_coords.csv"))
+}
+```
+

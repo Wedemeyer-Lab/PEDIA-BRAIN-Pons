@@ -101,6 +101,16 @@ CoveragePlot(
 ```
 
 ```{r Supplemental Figure 3E}
+
+
+#Inserted a table using already calculated number. No codes were used.
+```
+
+```{r Supplemental Figure 3F}
+#Inserted a table using already calculated number. No codes were used.
+```
+
+```{r Supplemental Figure 3G}
 ###calculate the DAP in each subcluster
 DefaultAssay(OPC_harmony) <- "ATAC"
 OPC_harmony <- SetIdent(OPC_harmony, value = OPC_harmony@meta.data$Subcluster)
@@ -188,7 +198,7 @@ plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE
 draw(plot_GO)
 ```
 
-```{r Supplemental Figure 3F}
+```{r Supplemental Figure 3H}
 #read in top 10 DAP across ages in OPC
 OPC_dev <- read.xlsx("output/tables/OPC_Age_DAP.xlsx")
 
