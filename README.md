@@ -17,7 +17,7 @@ Authors: Tianli Ding†, Gary Schweickart†, Adithe Rivaldi, Cole Harrington,  
 
 ## Structure of the Repository
 
-* **analysis** contains all code used t"o create figures an tables 
+* **analysis** contains all code used to create figures an tables 
 * **code** contains functions relevant to the creation of the pons atlas
 * **data** contains the raw data files (not included see GEO)
 * **output** contains figures, tables, and RDS files created during the analysis steps
@@ -26,8 +26,8 @@ Authors: Tianli Ding†, Gary Schweickart†, Adithe Rivaldi, Cole Harrington,  
 
 * Download Pediatric and Adult files from GEO (Link)
 * Download Fetal pons data by following the instructions here: https://github.com/linnarsson-lab/fetal_brain_multiomics?tab=readme-ov-file 
-* Follow MultiomeWorkflow.Rmd, in the *code* folder, for each project
-* Merge Projects following Merge_Projects.Rmd, in the *code* folder.
-* Use created atlas for subsequent analysis files in the *analysis* folder
+* Follow MultiomeWorkflow.Rmd, in the **code** folder, for each project
+* Merge Projects following Merge_Projects.Rmd, in the **code** folder.
+* Use created atlas for subsequent analysis files in the **analysis** folder
 
 Note: You can skip the creation of the atlas by downloading the full or downsampled atlas here: https://pediabrain.nchgenomics.org/
