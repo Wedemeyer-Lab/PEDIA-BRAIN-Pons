@@ -21,15 +21,15 @@ library(harmony)
 
 ```{r set colors}
 ##set colors
-cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434","Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early Oligo" = "#3998f5","Oligo" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+cellcolor = c("ROBO2 Ependymal" = "#000000","SLIT2 Ependymal" = "#4d4d4d","Radial Glia" =  "#fcff5d", "Transit Amplifying Cell" = "#DFFF00","PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434","Neuron" = "#006400","OPC" = "#0096FF", "Fetal COP" = "#00FFFF", "COP" = "#A7C7E7","Early OL" = "#3998f5","OL" = "#1F51FF", "Astrocyte" = "orange", "Mesenchymal" = "#b732cc", "Immune" = "#FF1493", "Endothelial" = "#000080",  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
 
 subtypecolor <- c("Ependymal" = "#000000","Fetal Ependymal" = "#36454F", "ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", 
                   "Transit Amplifying Cell" = "#DFFF00", "PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", 
-                  "Glut Neuron" = "#228c68", "Neuron" = "#006400","SEMA3E Astrocyte" = "#FFDAB9","ROBO2 Astrocyte" = "#FF4F00","Oligo-like Astrocyte" = "#C2A162",
+                  "Glut Neuron" = "#228c68", "Neuron" = "#006400","SEMA3E Astrocyte" = "#FFDAB9","ROBO2 Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162",
                   "Undetermined Astrocyte" = "#BDC3C7","Fetal COP" = "#00FFFF","RG-like OPC" =  "#89CFF0","OPC" = "#0096FF","COP" = "#A7C7E7",
-                  "Astrocyte-like OPC"= "#40E0D0", "Early Oligo" = "#3998f5","RBFOX1 Oligo" = "#8A2BE2","OPALIN Oligo" = "#1A3EAB",
+                  "Astrocyte-like OPC"= "#40E0D0", "Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB",
                   "Mesenchymal" = "#b732cc", "Fetal Microglia" = "#FFB3BA", "Microglia" = "#FF6F61", "Lymphocyte" = "darkred",
-                  "Lymphatic Endothelial" = "#D5006D", "Immune Oligo" = "#D8BFD8", "Endothelial" = "#000080",
+                  "Lymphatic Endothelial" = "#D5006D", "Immune OL" = "#D8BFD8", "Endothelial" = "#000080",
                   "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
 # dev group 
 Development = c("#0D0887", "#7E03A8", "#CC4678", "#F89441", "#F0F921")
@@ -41,7 +41,7 @@ postnatal= c("Postnatal" = "#F0F921", "Fetal" =  "#0D0887")
 
 ```{r read in data}
 # read in data
-atlas <- readRDS("output/objects/atlas.RDS")
+atlas <- readRDS("output/objects/atlas_final.RDS")
 ## remove atac assays since we are only mapping gene expression
 atlas@assays$peaksMACS2 <- NULL
 atlas@assays$ATAC <- NULL

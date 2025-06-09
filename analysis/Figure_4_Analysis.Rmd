@@ -472,10 +472,10 @@ new.cluster.ids <- c(cluster_0, cluster_1, cluster_2, cluster_3, cluster_4, clus
 names(new.cluster.ids) <- levels(OL_harmony)
 OL_harmony <- RenameIdents(OL_harmony, new.cluster.ids)
 OL_harmony$Subcluster <- OL_harmony@active.ident
-OL_harmony@meta.data$Subcluster <- factor(x = OL_harmony@meta.data$Subcluster, levels = c("Early OL","RBFOX1 OL","OPALIN OL"))
+OL_harmony@meta.data$Subcluster <- factor(x = OL_harmony@meta.data$Subcluster, levels = c("Early OL","OPALIN OL","RBFOX1 OL"))
 
 #assign colors to each subcluster
-OL_subcluster_color = c("Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB")
+OL_subcluster_color = c("Early OL" = "#3998f5","OPALIN OL" = "#1A3EAB","RBFOX1 OL" = "#8A2BE2")
 
 ##to plot subcluster on RNA DimPlot
 DimPlot(OL_harmony, label = F, reduction = "umap.rna", cols = OL_subcluster_color)

@@ -359,6 +359,7 @@ rankedPathways$FDR <- ifelse(rankedPathways$pval<rankedPathways$FDRcrit,TRUE,FAL
 rankedPathways$p.adj <- rankedPathways$pval/nrow(rankedPathways)
 rankedPathways$p.adjResult <- ifelse(rankedPathways$p.adj<0.05,TRUE,FALSE)
 write.csv(rankedPathways,file="output/tables/DifferentiallyExpressedPathwaysAllDevgroups.csv", row.names = TRUE, col.names = TRUE)
+
 ```
 
 
@@ -440,7 +441,7 @@ write.csv(rankedPathways,file="output/tables/DifferentiallyExpressedPathways_pos
 samples <- sampleMetadata$sample_id[sampleMetadata$dev.group != "Fetal"]
 # Generate a dataframe of communication probabilities for each celltype of pathways with a significant
 netP.list <- lapply(samples, function(sample) {
-  df <- reshape2::melt(postnatal.chatlist[[sample]]@netP$prob, value.name = "prob")
+  df <- reshape2::melt(chat.list[[sample]]@netP$prob, value.name = "prob")
   colnames(df)[1:3] <- c("source","target","pathway_name")
   meta <- data.frame(sample = rep(sample,times = nrow(df)),
                      age.group = rep(sampleMetadata[sample,"dev.group"],times = nrow(df)))
@@ -519,8 +520,20 @@ rankCellComPval <- function(mat, metaCol, celltypes, pathways, FDR = 0.05) {
 ```
 
 ```{r identify most significant netp}
-# ID the most significantly different cell-cell communication pathways by grade
+# ID the most significantly different cell-cell communication pathways by dev
 RankedInteractionProb_Age <- rankCellComPval(mat = sigNetP, metaCol = "dev.group", celltypes = levels.celltype, pathways = pathwaysShort)
+
+
+
+sigpath.list<-lapply(dev.list, function(dev) {
+  df <- subset(sigPathwayProbs, project == dev)[,unique(RankedInteractionProb_Age$pathway[RankedInteractionProb_Age$FDRresult])[!is.na(unique(RankedInteractionProb_Age$pathway[RankedInteractionProb_Age$FDRresult]))]] %>% t() %>% data.frame()
+  df$pathway <- rownames(df)
+  df<-df[,c("pathway", colnames(df)[1:(dim(df)[2]-1)])]
+  })
+names(sigpath.list) <- dev.list
+writexl::write_xlsx(sigpath.list, "output/tables/Table6.xlsx")
+
+
 
 ```
 
@@ -1008,6 +1021,10 @@ for (dev in dev.list){
   }
 }
 
+outdevlist<-lapply(dev.list, function(dev) {subset(out.dev.df, dev.group == dev)})
+names(outdevlist) <- dev.list
+writexl::write_xlsx(outdevlist, "output/tables/Table5.xlsx")
+
 out.dev.df <- subset(out.dev.df, pathway == "Glutamate" |  pathway == "NRXN" |  pathway == "NRG" | pathway == "ADGRL" | pathway == "NCAM")
 ggplot(out.dev.df, aes(x=dev.group, y=count, fill = dev.group))+
   geom_bar(stat='identity')+#xlim(c(0,20))+
@@ -1021,10 +1038,6 @@ ggplot(out.dev.df, aes(x=dev.group, y=count, fill = dev.group))+
   scale_fill_manual(values = Development) +
   theme_classic() + facet_wrap(~pathway)
 ggsave("dev.group_pathway_barplots_legend.pdf")
-
-
-
-
 ```
 
 
@@ -1683,12 +1696,6 @@ ggsave(paste0(dev.group,".pdf"), height=8, width=12)
 }
 
 ```
-
-```{r}
-save.image("wip.RData")
-load("wip.RData")
-```
-
 
 ```{r}
 netAnalysis_contribution_mat <- function(mat, signaling, signaling.name = NULL, sources.use = NULL, 
