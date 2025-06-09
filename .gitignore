@@ -4,8 +4,6 @@
 .Ruserdata
 data/raw/*
 output/objects/*
-code/extraplots.R
-code/fix_names.R
-code/get_files_for_Figure7.R
-output/tables/disease_mapping/*
+code/misc/*
+output/tables/mapping/*
 analysis/old/*
