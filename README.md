@@ -1,4 +1,4 @@
-# PEDIA-BRAIN: Pons
+# PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability
 
 ## About
 Advancements in scalable and reliable single cell sequencing technologies have significantly enhanced our understanding of the human brain's diversity in terms of gene expression and chromatin accessibility. Numerous research groups have mapped the cellular diversity of the fetal brain with unprecedented detail. However, most studies on the transcriptional and chromatin signatures of the developing human brain have primarily concentrated on the telencephalon or limited developmental timeframes.
