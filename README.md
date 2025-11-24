@@ -1,6 +1,6 @@
 # PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability
 
-This is a repository for the manuscript entitled "PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability". Available here (link here).
+This is a repository for the manuscript entitled "PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability". Currently in review; the preprint available here: [(bioRxiv)](https://www.biorxiv.org/content/10.1101/2025.09.21.677597v1).
 
 Authors: Tianli Ding†, Gary Schweickart†, Adithe Rivaldi, Cole Harrington,  Aaron Varghese, Ke Qin, Ben Kelly, Grant Lammi, Benjamin D. Sunkel, Kathryn L. Stahl, Alex H. Wagner, Jeffrey R. Leonard, Albert M. Isaacs, Katherine E. Miller, Elaine R. Mardis, Michelle A. Wedemeyer*
 
