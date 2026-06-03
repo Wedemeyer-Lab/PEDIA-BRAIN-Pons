@@ -1,8 +1,8 @@
 # PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability
 
-This is a repository for the manuscript entitled "PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability". Currently in review; the preprint available here: [(bioRxiv)](https://www.biorxiv.org/content/10.1101/2025.09.21.677597v1).
+This is a repository for the manuscript entitled "PEDIA-BRAIN: A single nuclei multiomic encyclopedia of the human pons provides a resource for normal development and disease vulnerability". Currently in review; the preprint available here: [(bioRxiv)]([https://www.biorxiv.org/content/10.1101/2025.09.21.677597v1](https://www.biorxiv.org/content/10.1101/2025.09.21.677597v2).
 
-Authors: Tianli Ding†, Gary Schweickart†, Adithe Rivaldi, Cole Harrington,  Aaron Varghese, Ke Qin, Ben Kelly, Grant Lammi, Benjamin D. Sunkel, Kathryn L. Stahl, Alex H. Wagner, Jeffrey R. Leonard, Albert M. Isaacs, Katherine E. Miller, Elaine R. Mardis, Michelle A. Wedemeyer*
+Authors: Tianli Ding†, Gary Schweickart†, Kaitlin Kaiser, Adithe Rivaldi, Nicholas Marchal, Cole Harrington,  Aaron Varghese, Ke Qin, Benjamin J. Kelly, Benjamin D. Sunkel, Kathryn L. Stahl, Alex H. Wagner, Jeffrey R. Leonard, Albert M. Isaacs, Katherine E. Miller, Elaine R. Mardis, Michelle A. Wedemeyer*
 
 †These authors contributed equally to this work
 
@@ -13,7 +13,7 @@ Advancements in scalable and reliable single cell sequencing technologies have s
 
 The PEDIA-BRAIN (Pediatric Encyclopedia of Development from Infancy to Adulthood - Brain Regions and Associated Integrative Neuroscience) is a public resource encompassing the complete spectrum of human brain development. It incorporates droplet-based single nuclei RNA sequencing and open chromatin profiling (snRNA-seq + snATAC-seq) of normal tissues corresponding to critical stages of postnatal development including infant and toddler (0-2 years), child (4-8 years), adolescent (13-14 years), and early adulthood, at the completion of myelination (31-33 years).
 
-For a user-friendly analysis tool, check out https://pediabrain.nchgenomics.org/.
+For a user-friendly analysis tool, check out https://pediabrain.nchgenomics.org/ (available after publication).
 
 ## Structure of the Repository
 
@@ -30,4 +30,4 @@ For a user-friendly analysis tool, check out https://pediabrain.nchgenomics.org/
 * Merge Projects following Merge_Projects.Rmd, in the **code** folder.
 * Use created atlas for subsequent analysis files in the **analysis** folder
 
-Note: You can skip the creation of the atlas by downloading the full or downsampled atlas here: https://pediabrain.nchgenomics.org/
+Note: You can skip the creation of the atlas by downloading the full or downsampled atlas here: https://pediabrain.nchgenomics.org/ (available after publication).
