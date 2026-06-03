@@ -1,0 +1,571 @@
+---
+title: "Figure 1"
+author: "Sheldon Ding"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+
+###Figure 1
+```{r Figure 1a}
+# the schematic of experimental design was made on BioRender
+
+# determine weighted-nearset neighbour (wnn) analysis resolution and number of clusters
+clustree(sobj) #determined the wnn resolution @ 0.2 and 40 clusters in total
+
+# set wsnn resolution as active identity for further analysis
+Idents(sobj) <- "wsnn_res.0.2"
+
+# calculate differentially expressed genes (DEG) between different clusters using DESeq2
+DefaultAssay(sobj) <- "RNA"
+
+agg<-AggregateExpression(sobj,assays="RNA", return.seurat=F, group.by=c("sample_id","wsnn_res.0.2"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- sobj@meta.data[, c("wsnn_res.0.2","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$wsnn_res.0.2)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$wsnn_res.0.2,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(sobj$wsnn_res.0.2,sobj$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$wsnn_res.0.2)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+ct_meta$wsnn_res.0.2 <- factor(ct_meta$wsnn_res.0.2, levels = as.character(0:39))
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ wsnn_res.0.2 + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+estimateSizeFactors(dds, type = 'iterate')
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+DEG_res_list_ct <- list()
+for (cell in gsub(" ", ".", gsub("\\+", ".", DEA))) {
+  message(cell)
+  
+  res <- results(dds, name = paste0("wsnn_res.0.2", cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df <- subset(res.df, log2FoldChange > 0)
+  res.df <- res.df[order(res.df$padj, decreasing = FALSE), ]
+  
+  res.df$pct.expressed <- NA_real_
+  
+  sig_idx <- complete.cases(res.df[, c("padj", "log2FoldChange")]) &
+    res.df$padj < 0.05 &
+    res.df$log2FoldChange > 1
+  
+  features <- res.df$gene[sig_idx]
+  
+  if (length(features) > 0) {
+    pct <- scCustomize::Percent_Expressing(
+      sobj,
+      features = features,
+      assay = "RNA",
+      group.by = "wsnn_res.0.2"
+    )
+    
+    pct_col <- make.names(cell)
+    
+    if (!pct_col %in% colnames(pct)) {
+      warning(paste("Column not found:", pct_col))
+      print(colnames(pct))
+    } else {
+      res.df$pct.expressed[sig_idx] <- pct[features, pct_col]
+    }
+  }
+  
+  DEG_res_list_ct[[cell]] <- res.df
+}
+
+
+# based on DEG and canonical marker, we determined cell type of each cluster
+
+# set cluster identity to cell type
+Idents(sobj) <- "wsnn_res.0.2"
+new_names <- c(
+  "0" = "OL",
+  "1" = "OL",
+  "2" = "Astrocyte",
+  "3" = "Myeloid",
+  "4" = "Intermediate Proliferative Cell",
+  "5" = "Radial Glia",
+  "6" = "Neuron",
+  "7" = "PAX6+ HOXB3+ Neuroblast",
+  "8" = "OPC",
+  "9" = "PAX6+ NEUROD1+ Neuroblast",
+  "10" = "Early OL",
+  "11" = "Neuronal Progenitor",
+  "12" = "OPC",
+  "13" = "Endothelial",
+  "14" = "Ependymal",
+  "15" = "Myeloid",
+  "16" = "Mesenchymal",
+  "17" = "Pericyte",
+  "18" = "Radial Glia",
+  "19" = "Fetal COP",
+  "20" = "Myeloid",
+  "21" = "Erythroblast",
+  "22" = "Neuron",
+  "23" = "OL",
+  "24" = "OL",
+  "25" = "OL",
+  "26" = "Radial Glia",
+  "27" = "OL",
+  "28" = "OL",
+  "29" = "OL",
+  "30" = "Astrocyte",
+  "31" = "OPC",
+  "32" = "OL",
+  "33" = "OL",
+  "34" = "OL",
+  "35" = "OL",
+  "36" = "OL",
+  "37" = "OL",
+  "38" = "Astrocyte",
+  "39" = "Myeloid"
+)
+
+sobj <- RenameIdents(sobj, new_names)
+
+sobj@active.ident <- factor(x = sobj@active.ident, levels = c("Ependymal", "Radial Glia", "Intermediate Proliferating Cell", "PAX6+ HOXB3+ Neuroblast", "PAX6+ NEUROD1+ Neuroblast", "Neuronal Progenitor","Neuron","Astrocyte","OPC", "Fetal COP","Early OL", "OL","Mesenchymal", "Myeloid", "Endothelial",  "Erythroblast", "Pericyte"))
+
+# add metadata of Cell_Type
+sobj$Cell_Type <- sobj@active.ident
+
+# assign colors to Cell_Type
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Neuronal Progenitor" = "#808000","Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "COP" = "#0D47A1","Early OL" = "#000080","OL" = "#37294f", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+
+# plot Cell_Type on umap.rna
+DimPlot(sobj, reduction = "umap.rna", cols = cellcolor)
+
+# plot Cell_Type on umap.atac
+DimPlot(sobj, reduction = "umap.atac", cols = cellcolor)
+
+# plot Cell_Type on wnn.umap
+DimPlot(sobj, reduction = "wnn.umap", cols = cellcolor)
+```
+
+```{r Figure 1b}
+# to plot Cell_Type on wnn.umap by fetal and postnatal
+DimPlot(sobj, reduction = "wnn.umap", cols = cellcolor, split.by = "postnatal")
+```
+
+```{r Figure 1c}
+# extract metadata of Cell_Type and dev.group for ggplot visualization
+sobj@meta.data %>% group_by(Cell_Type, dev.group) %>% summarise(n = n()) %>% group_by(dev.group) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
+
+# plot cell type composition difference across age groups on BarPlot
+ggplot(df1, aes(x = dev.group, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("dev.group") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+  theme_classic() + NoLegend()
+```
+
+```{r Figure 1d}
+# calculate differentially accessible peaks (DAP) between different Cell_Type using DESeq2 for later motif analysis
+DefaultAssay(sobj) <- "ATAC"
+sobj <- SetIdent(sobj, value = "Cell_Type")
+
+mat <- GetAssayData(sobj, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(sobj,assays="ATAC", return.seurat=F, group.by=c("sample_id","Cell_Type"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- sobj@meta.data[, c("Cell_Type","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$Cell_Type, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Cell_Type,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(sobj$Cell_Type,sobj$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+#check
+
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$Cell_Type)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$Cell_Type <- factor(ct_meta$Cell_Type,
+                                  levels = c("Ependymal", "Radial Glia", "Intermediate Proliferating Cell", "PAX6+ HOXB3+ Neuroblast", "PAX6+ NEUROD1+ Neuroblast", "Neuronal Progenitor","Neuron","Astrocyte","OPC", "Fetal COP","Early OL", "OL","Mesenchymal", "Myeloid", "Endothelial",  "Erythroblast", "Pericyte"))
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Cell_Type + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+celltype_res_list_ct_DAP <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("Cell_Type",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(sobj$Cell_Type == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  celltype_res_list_ct_DAP[[cell]] <- res.df
+}
+# save the cell type DAP
+write.xlsx("/output/celltype_res_list_ct_DAP.xlsx")
+
+# add motif pwm to sobj
+sq24 <- RSQLite::dbConnect(RSQLite::SQLite(), db(jaspar))
+motifs24 <- TFBSTools::getMatrixSet(sq24, list(species = "Homo sapiens", collection = "CORE"))
+sub <- AddMotifs(sobj, genome = BSgenome.Hsapiens.UCSC.hg38, pfm = motifs24)
+
+# read in the cell type DAP
+sheetnames <- readxl::excel_sheets(path ="/output/celltype_res_list_ct_DAP.xlsx")
+
+# split DAPs
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/celltype_res_list_ct_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+DefaultAssay(sub) <- "RNA"
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+# run FindMotifs with TF expression filtering
+out_dir <- "/output/"
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  res <- tryCatch({
+ DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "Cell_Type"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+    DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+    
+    enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in cell types with more than 1,000 cells
+goi <- c("SOX4","SOX2","POU3F3","UNCX","EBF3","NEUROD1","HOXB4","ASCL1","SOX8","SOX10","FOXC2","IKZF1") %>% unique
+
+# plot the rna expression of motifs on DotPlot
+cell_counts <- table(sub$Cell_Type)
+keep_cells <- names(cell_counts[cell_counts >= 1000])
+
+Idents(sub) <- "Cell_Type"
+
+VlnPlot(
+  sub,
+  features = goi,
+  idents = keep_cells, stack = T
+) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#plot the peaks of motifs on CoveragePlot
+DefaultAssay(sub) <- "ATAC"
+sub <- RegionStats(sub, genome = BSgenome.Hsapiens.UCSC.hg38)
+for (x in goi) {
+  message("Plotting: ", x)
+  
+  p <- tryCatch({
+    CoveragePlot(
+      object = sub,
+      region = x,
+      features = x,idents = keep_cells, annotation = F,peaks = F,assay="ATAC") & scale_fill_manual(values = cellcolor) & theme(
+        panel.background = element_rect(fill = "gray"))
+    
+  }, error = function(e) {
+    warning(paste("Skipping", x, "-", e$message))
+    return(NULL)
+  })
+}
+
+# plot the chromVAR activity of motifs on heatmap
+over1k<-table(sobj_cv$Cell_Type)[table(sobj_cv$Cell_Type) > 1000] %>% names()
+cells.trunc<-rownames(sobj_cv@meta.data[sobj_cv$Cell_Type %in% over1k,])
+sub <- subset(sobj_cv, cells = cells.trunc)
+
+df<-read_xlsx(paste0("output/OPCvsAll_DAP_enrichedMotifs.xlsx"))#borrow the motif names from any motif analysis ouput
+list<-df$motif[df$motif.name %in% goi]
+names(list) <- df$motif.name[df$motif.name %in% goi]
+                             
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$Cell_Type
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+Heatmap(t(avg_mat[goi,]),
+        name = "chromVAR activity",
+        show_row_names = T,
+        cluster_rows = F,
+        cluster_columns = F,row_order = names(cellcolor)[names(cellcolor) %in% over1k])
+```
+
+
+
+
+
+
+
+
+
+
+
+

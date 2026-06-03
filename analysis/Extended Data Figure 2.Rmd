@@ -1,0 +1,589 @@
+---
+title: "Extended Data Figure 2"
+author: "Sheldon Ding"
+date: "2026-05-06"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r color}
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Neuronal Progenitor" = "#808000","Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "COP" = "#0D47A1","Early OL" = "#000080","OL" = "#37294f", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+```
+
+###Extended Data Figure 2
+```{r Extended Data Figure 2a}
+atac.weights<-lapply(unique(sobj$Cell_Type), function(cell) {
+  return(mean(sobj$ATAC.weight[sobj$Cell_Type==cell]))
+})
+rna.weights<-lapply(unique(sobj$Cell_Type), function(cell) {
+  return(mean(1-sobj$ATAC.weight[sobj$Cell_Type==cell]))
+})
+
+weightmat<-t(as.matrix(unlist(atac.weights)))
+colnames(weightmat) <- unique(sobj$Cell_Type)
+weightmat<-t(as.matrix(weightmat[,names(cellcolor)[names(cellcolor) %in% keep]]))
+rownames(weightmat) <- "Mean ATAC weight"
+rna.weightmat<-t(as.matrix(1-unlist(atac.weights)))
+colnames(rna.weightmat) <- unique(sobj$Cell_Type)
+
+rna.weightmat<-t(as.matrix(rna.weightmat[,names(cellcolor)[names(cellcolor) %in% keep]]))
+rownames(rna.weightmat) <- "Mean RNA weight"
+#weightmat <- rbind(rna.weightmat,weightmat)
+
+col_fun2 <- colorRamp2::colorRamp2(
+  seq(0, 1, length.out = 5),
+  c(
+
+  "white",
+  "#FFCCCC",
+  "#FF9999",
+  "#FF6666",
+  "red"
+)
+
+)
+
+h2.atac <- Heatmap(
+   matrix = weightmat,
+  name = "RNA vs ATAC Weights WNN",
+  col = col_fun2,
+  #row_title = "Average\nATAC\n weight",
+  #column_title = "Cell Type",
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  border = TRUE,
+  heatmap_legend_param = list(
+    title = "ATAC Weight",
+    legend_height = unit(3, "cm")
+  ),
+  #top_annotation = top_ha, row_title_side ="left", row_title_rot=90,
+  row_names_side = "left",
+  row_names_gp= gpar(fontsize = 8),
+  bottom_annotation = column_ha
+)
+
+col_fun3 <- colorRamp2::colorRamp2(
+  seq(min(0.0), max(1.0), length.out = 5),
+  c(
+
+"#FFFFFF",
+"#E6F2FF",
+"#99CCFF",
+"#3399FF",
+"#003366"
+)
+
+)
+
+
+h2.rna <- Heatmap(
+   matrix = rna.weightmat,
+  name = "RNA vs ATAC Weights WNN",
+  col = col_fun3,
+  #row_title = "Average\nATAC\n weight",
+  #column_title = "Cell Type",
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  border = TRUE,
+  heatmap_legend_param = list(
+    title = "RNA Weight",
+    legend_height = unit(3, "cm")
+  ),
+  #top_annotation = top_ha, row_title_side ="left", row_title_rot=90,
+  row_names_side = "left",
+  row_names_gp= gpar(fontsize = 8)
+
+)
+
+h2.rna %v% h2.atac
+```
+
+
+```{r Extended Data Figure 2b}
+postnatal.count <-table(sobj$Cell_Type, sobj$postnatal) %>% as.data.frame.matrix()
+postnatal.count$Total <-rowSums(postnatal.count)
+postnatal.count$Fetal_Prop <- postnatal.count$Fetal/postnatal.count$Total
+postnatal.prop <- postnatal.count[,"Fetal_Prop"] %>% data.frame(Fetal=.)
+rownames(postnatal.prop) <- rownames(postnatal.count)
+postnatal.prop$Postnatal <- 1-postnatal.prop$Fetal
+
+CellTypeDEGsByDev<-lapply(list.files("output/tables/deseq2/DEGs/celltype",full.names = T), function(x){
+  # Get all sheet names from the workbook
+sheet_names <- excel_sheets(x)
+
+# Read all sheets into a list of data frames
+list_of_dfs <- lapply(sheet_names, function(sheet_name) {
+  read_xlsx(x, sheet = sheet_name)
+})
+names(list_of_dfs) <- sheet_names
+return(list_of_dfs)
+})
+CellTypeDAPsByDev<-lapply(list.files("output/tables/deseq2/DAPs/celltype/",full.names = T), function(x){
+  # Get all sheet names from the workbook
+sheet_names <- excel_sheets(x)
+
+# Read all sheets into a list of data frames
+list_of_dfs <- lapply(sheet_names, function(sheet_name) {
+  read_xlsx(x, sheet = sheet_name)
+})
+names(list_of_dfs) <- sheet_names
+return(list_of_dfs)
+})
+
+names(CellTypeDEGsByDev) <- list.files("output/tables/deseq2/DEGs/celltype",full.names = F) %>% gsub("dev.xlsx", "",.) 
+
+ndeg.df<-data.frame(matrix(ncol = 19, nrow = 6))
+colnames(ndeg.df) <- c(names(CellTypeDEGsByDev), names(cellcolor)[!(names(cellcolor)%in% names(CellTypeDEGsByDev))])
+rownames(ndeg.df) <- c("Fetal", "Infant", "Child", "Adolescent","Adult", "Sex")
+ndeg.df[1:6,1:19] <- 0
+
+# assign lfc and pval cutoff
+alpha <- 0.05
+lfcc <- 1.5
+minpct <- 10
+
+for (cell in names(CellTypeDEGsByDev)) {
+  temp.list <- CellTypeDEGsByDev[[cell]]
+  for (dev in names(temp.list)){
+    temp.df <- data.frame(table((temp.list[[dev]]$padj< alpha) & (temp.list[[dev]]$log2FoldChange > lfcc)))
+    if (T %in% temp.df$Var1) {
+          ndeg.df[dev, cell] <- temp.df[temp.df$Var1 ==T, "Freq"]
+    } else {
+      ndeg.df[dev, cell] <-0
+    }
+
+  }
+}
+names(CellTypeDAPsByDev) <- list.files("output/tables/deseq2/DAPs/celltype/",full.names = F)%>% gsub("dev.xlsx", "",.) 
+ndap.df<-data.frame(matrix(ncol = 19, nrow = 6))
+colnames(ndap.df) <- c(names(CellTypeDAPsByDev), names(cellcolor)[!(names(cellcolor)%in% names(CellTypeDAPsByDev))])
+rownames(ndap.df) <- c("Fetal", "Infant", "Child", "Adolescent","Adult", "Sex")
+ndap.df[1:6,1:19] <- 0
+
+# assign lfc and pval cutoff
+alpha <- 0.05
+lfcc <- 1.5
+minpct <- 10
+
+for (cell in names(CellTypeDAPsByDev)) {
+  temp.list <- CellTypeDAPsByDev[[cell]]
+  for (dev in names(temp.list)){
+    temp.df <- data.frame(table((temp.list[[dev]]$padj< alpha) & (temp.list[[dev]]$log2FoldChange > lfcc)))
+    if (T %in% temp.df$Var1) {
+          ndap.df[dev, cell] <- temp.df[temp.df$Var1 ==T, "Freq"]
+    } else {
+      ndap.df[dev, cell] <-0
+    }
+
+  }
+}
+
+x <- "output/tables/deseq2/DEGs/allCellTypes.xlsx"
+# Get all sheet names from the workbook
+sheet_names <- excel_sheets(x)
+
+list_of_dfs <- lapply(sheet_names, function(sheet_name) {
+  read_xlsx(x, sheet = sheet_name)
+})
+
+names(list_of_dfs) <- levels(sobj$Cell_Type)
+
+count.df<-data.frame(matrix(nrow = 19, ncol=1))
+colnames(count.df) <- "Freq"
+count.df[1:19,1] <- NA
+rownames(count.df) <- levels(sobj$Cell_Type)
+
+for (cell in names(list_of_dfs)) {
+  temp.df <- list_of_dfs[[cell]]
+  
+  if (length(data.frame(table(temp.df$padj < alpha & temp.df$log2FoldChange >= lfcc))[,"Var1"])>1) {
+    tbl<- data.frame(table(temp.df$padj < alpha & temp.df$log2FoldChange >= lfcc & temp.df$pct.expressed > 10))
+    count.df[cell,"Freq"] <-tbl$Freq[tbl$Var1 == TRUE]
+  } else {
+      count.df[cell,"Freq"] <-0
+  }
+
+  
+  
+
+}
+
+rownames(count.df) <- gsub("\\."," ",rownames(count.df))
+
+x <- "output/tables/deseq2/DAPs/allCellTypes.xlsx"
+# Get all sheet names from the workbook
+sheet_names <- excel_sheets(x)
+
+list_of_dfs <- lapply(sheet_names, function(sheet_name) {
+  read_xlsx(x, sheet = sheet_name)
+})
+
+
+names(list_of_dfs) <- levels(sobj$Cell_Type)
+
+count.df.2<-data.frame(matrix(nrow = 19, ncol=1))
+colnames(count.df.2) <- "Freq"
+count.df.2[1:19,1] <- NA
+rownames(count.df.2) <- levels(sobj$Cell_Type)
+for (cell in names(list_of_dfs)) {
+  temp.df <- list_of_dfs[[cell]]
+  tbl<- data.frame(table(temp.df$padj < alpha & temp.df$log2FoldChange >= lfcc))
+  if (length(tbl$Var1)>1) {
+    count.df.2[cell,"Freq"] <-tbl$Freq[tbl$Var1 == TRUE]
+  } else {
+      count.df.2[cell,"Freq"] <-0
+  }
+  
+
+}
+
+rownames(count.df.2) <- gsub("\\."," ",rownames(count.df.2))
+
+
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+bar_cell = table(sobj$Cell_Type) %>% data.frame()
+keep<-bar_cell$Var1[bar_cell$Freq > 1000]
+keep <- names(cellcolor)[names(cellcolor) %in% keep]
+library(ComplexHeatmap)
+#mat <- as.matrix(log(ndeg.df+1))
+mat<-ndeg.df[,names(cellcolor)]
+mat <- as.matrix(mat[,keep]) %>% scale()
+
+bar_values_0 <- postnatal.prop[keep,]
+bar_values <- count.df
+bar_values <- bar_values[names(cellcolor),] %>% data.frame(Freq=.,row.names=names(cellcolor))
+bar_values <- bar_values[keep,]
+#bar_values$diff <- bar_values$total - bar_values$nDEGs
+#bar_values$total <- NULL
+bar_cell = table(sobj$Cell_Type) %>% data.frame()
+keep<-bar_cell$Var1[bar_cell$Freq > 1000]
+keep <- names(cellcolor)[names(cellcolor) %in% keep]
+bar_cell_values<-bar_cell$Freq[bar_cell$Freq > 1000]
+names(bar_cell_values) <- keep
+jet_colors <- c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000")
+col_fun <- colorRamp2::colorRamp2(
+  seq(min(mat[!is.na(mat)]), max(mat[!is.na(mat)]), length.out = 9),
+  colorRampPalette(colors = jet_colors)(9)
+
+)
+
+
+prop_ha = HeatmapAnnotation(
+  "Cell\ncount" = anno_barplot(
+        bar_cell_values,
+        bar_width = 0.8,
+        axis_param = list(side = "left", labels_rot = 0)
+        #annotation_label = "Total genes tested"
+    ),
+  "Fetal\nproportion" = anno_barplot(
+      bar_values_0,
+      gp = gpar(fill = c(
+        "Fetal" ="#0D0887",
+        "Postnatal" = "#F0F921"
+      )[colnames(postnatal.prop)]),
+      border = FALSE,
+      bar_width = 0.9,
+      axis_param = list(
+        at = c(0, 0.5, 1),
+        labels = c("0%", "50%", "100%")
+      )
+    ),
+      height = unit(3, "cm"), gap = unit(0.2, "cm"),
+    annotation_name_side = "left",
+    annotation_name_rot = 90
+    #annotation_name_gp =gpar(fontsize=9)
+)
+top_ha = HeatmapAnnotation(
+    
+    "DEG\ncounts" = anno_barplot(
+        bar_values,
+        gp = gpar(fill = cellcolor[names(cellcolor)[names(cellcolor) %in% keep]]),
+        bar_width = 0.8,
+        axis_param = list(side = "left", labels_rot = 0)
+        #annotation_label = "Cell type DEG counts"
+    ),
+    height = unit(1.5, "cm"), gap = unit(0.15, "cm"),
+    annotation_name_side = "left",
+    annotation_name_rot = 90
+    #annotation_name_gp =gpar(fontsize=9)
+      
+)
+
+
+
+h1.deg<-Heatmap(
+      mat[1:5,],
+  name = "DEGs",
+  #col = col_fun,
+  row_title = "Other\ncomparisons",
+  #column_title = "Cell Type",
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_names = TRUE,
+  show_column_names = F,
+  border = TRUE,
+  heatmap_legend_param = list(
+    title = "Count",
+    legend_height = unit(3, "cm")
+  ),
+  top_annotation = top_ha, row_title_side ="left", row_title_rot=90,
+  #row_title_gp = gpar(fontsize=9),
+  row_names_side = "left",row_names_gp = gpar(fontsize = 8)
+)
+
+
+#mat <- as.matrix(log(ndap.df+1))
+mat <- as.matrix(ndap.df[,names(cellcolor)][,keep]) %>% scale()
+bar_values_0 <- postnatal.prop[keep,]
+bar_values <- count.df.2[keep,]
+bar_values <-bar_values %>% data.frame(Freq=., row.names = keep)
+#bar_values$diff <- bar_values$total - bar_values$ndaps
+#bar_values$total <- NULL
+bar_cell = table(sobj$Cell_Type)[keep] %>% data.frame()
+bar_cell_values<-bar_cell$Freq
+names(bar_cell_values) <- keep
+jet_colors <- c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000")
+col_fun <- colorRamp2::colorRamp2(
+  seq(min(mat[!is.na(mat)]), max(mat[!is.na(mat)]), length.out = 9),
+  colorRampPalette(colors = jet_colors)(9)
+
+)
+
+# Heatmap annotations
+top_ha = HeatmapAnnotation(
+    
+    "DAP\ncounts" = anno_barplot(bar_values
+        ,
+        gp = gpar(fill = cellcolor[names(cellcolor)[names(cellcolor) %in% keep]]),
+        bar_width = 0.8,
+        axis_param = list(side = "left", labels_rot = 0)
+        #annotation_label = "Cell type DAP counts"
+    ),
+    height = unit(1.5, "cm"), gap = unit(0.15, "cm"),
+    annotation_name_side = "left",
+    annotation_name_rot = 90
+    #annotation_name_gp =gpar(fontsize=9)
+      
+)
+cell.df<-data.frame(cell=keep, row.names = keep)
+cell.df$cell <- factor(cell.df$cell, levels=names(cellcolor))
+column_ha = HeatmapAnnotation(df=cell.df,col=list(cell = cellcolor))
+h1.dap<-Heatmap(
+      mat[1:5,],
+  name = "DAPs",
+  #col = col_fun,
+  row_title = "Other\ncomparisons",
+  #column_title = "Cell Type",
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  show_heatmap_legend = F,
+  border = TRUE,
+  heatmap_legend_param = list(
+    title = "Count",
+    legend_height = unit(3, "cm")
+  ),
+  top_annotation = top_ha, row_title_side ="left", row_title_rot=90,
+  row_names_side = "left",
+  row_names_gp= gpar(fontsize = 8)
+    
+)
+
+sobj$Cell_Type_dev <- paste0(sobj$Cell_Type,"_",sobj$dev.group)
+
+sobj$Cell_Type_dev <- paste(sobj$Cell_Type, sobj$dev.group, sep="_")
+histone<-Seurat::AverageExpression(sobj, assays="RNA",features = c("H3-3A","H3-3B"), group.by = "Cell_Type_dev")
+histone.mat <- histone$RNA
+
+df<-(table(sobj$Cell_Type, sobj$dev.group) > 10) %>% data.frame()
+histone.mat.fixed <- data.frame(matrix(nrow = 5, ncol=16))
+colnames(histone.mat.fixed) <- keep
+rownames(histone.mat.fixed) <- names(devcolor)
+for (cell in keep){
+  for (dev in names(devcolor)) {
+    if ((paste0(cell,"-",dev) %in% colnames(histone.mat))& df[cell,dev]) {
+      histone.mat.fixed[dev,cell] <- histone.mat["H3-3A",paste0(cell,"-",dev)]      
+    } else if (!df[cell,dev]) {
+      histone.mat.fixed[dev,cell] <- NA
+    } else {
+      histone.mat.fixed[dev,cell]<- 0
+    }
+
+  }
+}
+
+histone.mat.fixedB <- data.frame(matrix(nrow = 5, ncol=16))
+colnames(histone.mat.fixedB) <- keep
+rownames(histone.mat.fixedB) <- names(devcolor)
+for (cell in keep){
+  for (dev in names(devcolor)) {
+    if ((paste0(cell,"-",dev) %in% colnames(histone.mat)) & df[cell,dev]) {
+      histone.mat.fixedB[dev,cell] <- histone.mat["H3-3B",paste0(cell,"-",dev)]
+    } else if (!df[cell,dev]) {
+      histone.mat.fixed[dev,cell] <- NA   
+    } else {
+      histone.mat.fixedB[dev,cell]<- 0
+    }
+
+  }
+}
+
+jet_col <- colorRamp2::colorRamp2(
+  seq(0, 10, length = 20),
+  colorRampPalette(c("white","red"))(20)
+)
+
+hh1<-Heatmap(
+  histone.mat.fixed,
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  row_names_side = "left",
+  col = jet_col
+)
+```
+```{r}
+jet_col <- colorRamp2::colorRamp2(
+  seq(0, 10, length = 20),
+  colorRampPalette(c("white","red"))(20)
+)
+hh2<-Heatmap(
+  histone.mat.fixedB,
+  row_names_side = "left",
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  col = jet_col,
+  bottom_annotation = column_ha
+)
+
+prop_ha %v% h1.deg %v% h1.dap %v% hh1 %v% hh2 # Extended Data Figure 2B only uses the annotation 
+```
+
+
+```{r Extended Data Figure 2c}
+# DimPlot of fetal and postnatal cell population with umap.rna
+DimPlot(sobj, split.by = "postnatal", reduction = "umap.rna",cols = cellcolor)
+
+# DimPlot of fetal and postnatal cell population with umap.atac
+DimPlot(sobj, split.by = "postnatal", reduction = "umap.atac", cols = cellcolor)
+```
+
+```{r Extended Data Figure 2d}
+# only plot Cell_Type with more than 1,000 cells
+cells <-table(sobj$Cell_Type)[table(sobj$Cell_Type) > 1000] %>% names
+
+# read in previously calculated top10 significant motifs in each Cell_Type (see Figure 1 analysis)
+motif.names <- lapply(cells, function(cell){
+  try({
+    df <- read_xlsx(paste0("output/",cell,"_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx"))
+    df <- subset(df, sig==T)
+    return(df$motif.name[1:10])
+  })
+})
+
+
+names(motif.names) <- cells
+motif.names <- motif.names[!(names(motif.names)%in%c("Early OL","Fetal Neuronal Progenitor"))]#"Early OL" and "Fetal Neuronal Progenitor" do not have significant motifs
+motifs <- unlist(motif.names)
+motifs <- motifs[!is.na(motifs)]
+sth <- motifs[grep("\\:\\:", motifs)] %>% str_split(.,"\\:\\:")
+names(sth) <- names(motifs[grep("\\:\\:", motifs)])
+unlist(sth)
+
+
+motifs<-sth %>% unlist() %>% append(motifs, .)
+motifs<-motifs[!grepl("\\:\\:", motifs)]
+
+
+avg_exp<-AverageExpression(sobj,assays = "RNA",features = motifs,group.by = "Cell_Type")
+mat <- avg_exp$RNA
+mat<- mat[,cells]
+
+# mat = motif expression matrix (rows = motifs, columns = cell types)
+# named vector of colors for each cell type
+
+# ensure order matches matrix columns
+cell_type <- colnames(mat) %>% factor(.,levels=names(cellcolor))
+
+
+# column annotation
+col_anno <- HeatmapAnnotation(
+  CellType = cell_type[order(cell_type)],
+  col = list(CellType = cellcolor)
+)
+
+clean_names<- sub("[0-9]+$", "", names(motifs))
+names.df <- data.frame(motifs,clean_names)
+names.df$clean_names<-factor(names.df$clean_names, levels=names(cellcolor))
+names.df<-names.df[order(names.df$clean_names),]
+
+# heatmap
+matz<-t(mat) %>% scale %>% t
+Heatmap(
+  as.matrix(matz[unique(names.df$motifs),names(cellcolor)[names(cellcolor) %in% cells]]),
+  name = "Motif expression",
+  top_annotation = col_anno,
+  cluster_rows = T,
+  cluster_columns = F,
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  show_row_dend = FALSE
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -223,7 +223,7 @@ plotQC <-function(sobj, frag.base.path = NULL, frag.full.path = NULL, out ="./",
                  "nFeature_RNA","nCount_RNA", "nFeature_ATAC","nCount_ATAC", "percent.mt")
     VlnPlot(object = sobj,
             features = metrics,
-            pt.size = 0.1,
+            pt.size = 0,
             ncol = 3,
     )
     ggsave(paste0(out.path,"/violinPlot.pdf"), units = "in",height = 10, width = 12)

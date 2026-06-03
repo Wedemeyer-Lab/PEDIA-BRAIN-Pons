@@ -1,0 +1,229 @@
+---
+title: "Extended Data Figure 3"
+author: "Sheldon Ding"
+date: "2026-05-06"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r color}
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Neuronal Progenitor" = "#808000","Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "COP" = "#0D47A1","Early OL" = "#000080","OL" = "#37294f", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+
+postnatalcolor <- c("Fetal" = "#0D0887", "Postnatal" = "#F0F921")
+```
+
+###Extended Data Figure 3
+```{r Extended Data Figure 3a}
+Idents(sobj) <- "Cell_Type"
+
+# subset out neuronal lineage cells for downstream analysis
+Neuron <-subset(sobj, idents = c("Radial Glia", "Intermediate Proliferating Cell", "PAX3 Neuroblast", "Neuron", "HOXB3 Neuroblast", "Fetal Neuronal Progenitor"))
+
+# run harmony to remove batch effect again on RNA assay
+DefaultAssay(Neuron) <- "RNA"
+Neuron <- Neuron %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+Neuron <- RunPCA(Neuron, assay = "SCT", npcs = 50)
+Neuron <- RunHarmony(Neuron,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna")
+
+# normalize and SCT transform again after harmony
+DefaultAssay(Neuron) <- "RNA"
+Neuron <- Neuron %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+# recluster Neuron subset
+Neuron <- Neuron  %>%
+  RunUMAP(reduction = "rna", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8), verbose = TRUE)
+
+# run harmony to remove batch effect again on ATAC assay
+DefaultAssay(Neuron) <- "ATAC" 
+Neuron <- RunTFIDF(Neuron) 
+Neuron <- FindTopFeatures(Neuron, min.cutoff = 'q0') 
+Neuron <- RunSVD(Neuron) 
+Neuron <- RunUMAP(Neuron, dims = 2:50, reduction = 'lsi')
+Neuron <- RunHarmony(object = Neuron, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac")
+Neuron <- RunUMAP(Neuron, dims = 2:50, reduction = 'atac', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+# run wnn on harmonized RNA and ATAC reduction
+Neuron <- FindMultiModalNeighbors(Neuron, reduction.list = list("rna", "atac"), dims.list = list(1:50, 2:50))
+Neuron <- RunUMAP(Neuron, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+Neuron <- FindClusters(Neuron, resolution = c(0.2, 0.4, 0.6, 0.8), graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+
+# set wnn resolution @ 0.2 for downstream analysis
+Idents(Neuron) <- "wsnn_res.0.2"
+
+# DimPlot of resolution of wsnn_res.0.2 with wnn.umap
+DimPlot(Neuron, group.by = "wsnn_res.0.2", reduction = "wnn.umap")
+```
+
+```{r Extended Data Figure 3b}
+# DimPlot of Cell_Type with wnn.umap
+DimPlot(Neuron, group.by = "Cell_Type", cols = cellcolor, reduction = "wnn.umap")
+```
+
+```{r Extended Data Figure 3c}
+# DimPlot of fetal and postnatal cells with wnn.umap
+DimPlot(Neuron, group.by = "postnatal", cols = postnatalcolor, reduction = "wnn.umap")
+```
+
+```{r Extended Data Figure 3d}
+# Initialize metadata
+neurons$subtype <- ""
+
+# cluster 5,2,7,25
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("SOX2","PAX6","MKI67"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(2,5,7,25)),"subtype"] <- "Radial glia" #
+
+# cluster 11,22,24
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("SOX2","PAX6","MKI67","YAP1","FZD10","FRZB","WNT7B"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(11,22,24)),"subtype"] <- "Intermediate Proliferative Progenitors" #
+
+# cluster 9,23
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("SOX10","PDGFRA","OLIG1"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(9,23)),"subtype"] <- "Fetal COP" #
+
+# cluster 0
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("RBFOX3","DCX","SLC17A6","PAX6","ONECUT1","BARHL1","HOXB3"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(0)),"subtype"] <- "HOXB3+ ONECUT1+ Migrating Excitatory Pons Neuroblasts" #
+
+# cluster 1
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("SOX2","YAP1","DCX","HOXB3","OLIG3","WNT5A","MKI67"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(1)),"subtype"] <- "HOXB3+ Late Proliferative Excitatory Neuroblasts" #
+
+# cluster 4,18
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("STMN2","DCX","TUBA1B"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(4,18)),"subtype"] <- "STMN2+ Early Neuroblasts" #
+
+# cluster 19
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("SOX2","LMX1A","MSX1","YAP1","MKI67"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(19)),"subtype"] <- "MSX1+ LMX1A+ Early Neuroblasts" #
+
+# cluster 3,10
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("EYS","EOMES","NEUROD1","DCX","LMX1A"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(3,10)),"subtype"] <- "NEUROD1+ EYS+ Migrating Excitatory Neuroblasts" #
+
+# cluster 15
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("LMX1A","EOMES","OTX2","EYS","SLC17A6","GAD1","NEUROD1"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(15)),"subtype"] <- "LMX1A+ OTX2+ EYS+ Migrating Excitatory Neuroblasts" #
+
+# cluster 6
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("DCX","VSNL1","OPCML","OPRM1","RBFOX1","GAD1","GAD2"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(6)),"subtype"] <- "OPCML+ Migrating Inhibitory Neuroblasts" #
+
+# cluster 13
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("OLIG1","YAP1","OLIG2","PDGFRA","MKI67"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(13)),"subtype"] <- "Early Oligodendrocyte Progenitors" #
+
+# cluster 8,20
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("ATOH1","DCX","OLIG3","HOXB3"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(8,20)),"subtype"] <- "HOXB3+ ATOH1+ Migrating Excitatory Neuroblasts" #
+
+# cluster 14
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("PAX2","TFAP2B","GAD1","GAD2","SLC6A5"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(14)),"subtype"] <- "PAX2+ Locus Coeruleus Inhibitory Neuroblasts" #
+
+# cluster 16
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("RUNX1","ISL1","SLC17A6","ONECUT3"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(16)),"subtype"] <- "RUNX1+ ISL1+ Cholinergic Neuroblasts" #
+
+# cluster 12
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("RBFOX1","VSNL1","OPCML","OPRM1","GAD1","SLC17A6"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(12)),"subtype"] <- "VSNL1+ Excitatory Neurons" #
+
+# cluster 17
+# FeaturePlot(neurons, reduction = "wnn.umap", features = c("DMBX1","OTX2","GAD1","PTCHD4","LHX5","GATA3","LMX1B"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(17)),"subtype"] <- "OTX2+ GATA3+ Inhibitory Neuroblasts" #
+
+# cluster 21
+#FeaturePlot(neurons, reduction = "wnn.umap", features = c("HOXB3","PAX6","SLC17A6","RBFOX3","DCX"))
+neurons@meta.data[which(neurons$wsnn_res.0.2 %in% c(21)),"subtype"] <- "PAX6+ HOXB3+ Excitatory Neuroblasts" #
+
+
+subtype_levels <- c("Radial glia","Intermediate Proliferative Progenitors","Early Oligodendrocyte Progenitors","Fetal COP","STMN2+ Early Neuroblasts",
+                    "HOXB3+ Late Proliferative Excitatory Neuroblasts","HOXB3+ ONECUT1+ Migrating Excitatory Pons Neuroblasts",
+                    "HOXB3+ ATOH1+ Migrating Excitatory Neuroblasts","NEUROD1+ EYS+ Migrating Excitatory Neuroblasts","PAX6+ HOXB3+ Excitatory Neuroblasts",
+                    "MSX1+ LMX1A+ Early Neuroblasts","LMX1A+ OTX2+ EYS+ Migrating Excitatory Neuroblasts",
+                    "RUNX1+ ISL1+ Cholinergic Neuroblasts",
+                    "PAX2+ Locus Coeruleus Inhibitory Neuroblasts","OTX2+ GATA3+ Inhibitory Neuroblasts",
+                    "OPCML+ Migrating Inhibitory Neuroblasts","VSNL1+ Excitatory Neurons")
+
+neurons$subtype <- factor(neurons$subtype, levels = subtype_levels)
+
+
+
+DimPlot(neurons, reduction = "wnn.umap", group.by = "subtype")
+```
+
+```{r Extended Data Figure 3e}
+FeaturePlot(neurons, reduction = "wnn.umap", features = c("SOX2","DCX","RBFOX3","PAX6","HOXB3","NEUROD1","SLC17A6","GAD1","SLC6A5","MKI67","SLC6A2"))
+```
+
+```{r Extended Data Figure 3f}
+neurons$subtype <- factor(neurons$subtype, levels = subtype_levels[25:1])
+VlnPlot(neurons, stack=T, fill.by = "ident", group.by = "subtype",
+        features = c("SOX2","TUBA1B","STMN2","ASCL1","OLIG1","MPZ","MKI67",
+                     "PAX3","PAX6","YAP1","DCX","RBFOX1","RBFOX3","BARHL1",
+                     "HOXB3","ONECUT1","WNT5A","DCX",
+                     "LMX1A","NEUROD1","EYS","EOMES","OTX2","PAX7","ASCL1","PAX2",
+                     "EOMES","GATA3","DMBX1","RUNX1","ISL1","VSNL1",
+                     "SLC17A6","OPRM1","OPCML","SLC6A5","GAD1","GAD2")) +
+  NoLegend()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -202,6 +202,6 @@ sobj.merged <- sobj.merged %>%
 saveRDS(sobj.merged, file = paste0(out.base, "/objects/merged/sobj.mergedSCT.RDS"))
 ```
 
-### Similarly run for adult multiome and fetal multiome
+
 
 

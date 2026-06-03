@@ -7,3 +7,6 @@ output/objects/*
 code/misc/*
 output/tables/mapping/*
 analysis/old/*
+output/*
+analysis/Sheldon/*
+analysis/misc/*

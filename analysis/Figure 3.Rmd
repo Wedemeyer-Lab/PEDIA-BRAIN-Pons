@@ -1,0 +1,1280 @@
+---
+title: "Figure 3"
+author: "Sheldon Ding"
+date: "2026-05-05"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r color}
+devcolor <- c("Fetal" = "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+postnatalcolor <- c("Fetal" = "#0D0887", "Postnatal" = "#F0F921")
+
+cellcolor <- c("Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f")
+
+OPC_subtype_colors <-  c("Early Fetal OPC" = "#00FFFF", "Late Fetal OPC" = "#89CFF0","Postnatal OPC" = "#42A5F5", "COP" = "#0D47A1")
+```
+
+
+###Figure 3
+```{r Figure 3a}
+Idents(sobj) <- "Cell_Type"
+
+# subset out "Fetal COP", "OPC", "Early OL", "OL" for downstream analysis
+OL_lineage <-subset(sobj, idents = c("Fetal COP", "OPC", "Early OL", "OL"))
+
+# run harmony to remove batch effect again on RNA assay
+DefaultAssay(OL_lineage) <- "RNA"
+OL_lineage <- OL_lineage %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+OL_lineage <- RunPCA(OL_lineage, assay = "SCT", npcs = 50)
+OL_lineage <- RunHarmony(OL_lineage,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna")
+
+# normalize and SCT transform again after harmony
+DefaultAssay(OL_lineage) <- "RNA"
+OL_lineage <- OL_lineage %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+# recluster OL_lineage subset
+OL_lineage <- OL_lineage  %>%
+  RunUMAP(reduction = "rna", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna") %>%
+  FindClusters(verbose = TRUE)
+
+# run harmony to remove batch effect again on ATAC assay
+DefaultAssay(OL_lineage) <- "ATAC" 
+OL_lineage <- RunTFIDF(OL_lineage) 
+OL_lineage <- FindTopFeatures(OL_lineage, min.cutoff = 'q0') 
+OL_lineage <- RunSVD(OL_lineage) 
+OL_lineage <- RunUMAP(OL_lineage, dims = 2:50, reduction = 'lsi')
+OL_lineage <- RunHarmony(object = OL_lineage, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac")
+OL_lineage <- RunUMAP(OL_lineage, dims = 2:50, reduction = 'atac', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+# run wnn on harmonized RNA and ATAC reduction
+OL_lineage <- FindMultiModalNeighbors(OL_lineage, reduction.list = list("rna", "atac"), dims.list = list(1:50, 2:50))
+OL_lineage <- RunUMAP(OL_lineage, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+OL_lineage <- FindClusters(OL_lineage, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+
+# DimPlot using wnn.map group by Cell_Type
+DimPlot(OL_lineage, group.by = "Cell_Type",reduction = "wnn.umap", cols = cellcolor)
+```
+
+```{r Figure 3b}
+# DimPlot using wnn.map group by postnatal
+DimPlot(OL_lineage, group.by = "postnatal",reduction = "wnn.umap", cols = devcolor)
+```
+
+```{r Figure 3c}
+# extract metadata of "postnatal" and "Cell_Type" for ggplot visualization
+OL_lineage@meta.data %>% group_by(postnatal, Cell_Type) %>% summarise(n = n()) %>% group_by(Cell_Type) %>% mutate(freq = n / sum(n)) %>% data.frame -> df1
+
+# plot cell type composition difference between fetal and postnatal on BarPlot
+ggplot(df1, aes(x = Cell_Type, y = freq, fill = postnatal)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("Cell_Type") + ylab("Proportion") +
+  scale_fill_manual(values = postnatalcolor) +
+    scale_y_continuous(expand = c(0, 0)) +
+  theme_classic() + NoLegend()
+```
+
+```{r Figure 3d}
+# the hypothesized OL lineage development trajectory was made on BioRender
+```
+
+```{r Figure 3e}
+# plot "nFeature_RNA", "nCount_RNA", "nFeature_ATAC", "nCount_ATAC" of each Cell_Type on ViolinPlot
+Idents(OL_lineage) <- "Cell_Type"
+VlnPlot(OL_lineage, features = c("nFeature_RNA", "nCount_RNA", "nFeature_ATAC", "nCount_ATAC"), stack = T, fill.by = "ident",flip = T, cols = cellcolor)
+```
+
+```{r Figure 3f}
+DefaultAssay(OL_lineage) <- "ATAC"
+OL_lineage <- SetIdent(OL_lineage, value = "Cell_Type")
+
+# calculate DAP between different Cell_Type using DESeq2 for later motif analysis
+mat <- GetAssayData(OL_lineage, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(OL_lineage,assays="ATAC", return.seurat=F, group.by=c("sample_id","Cell_Type"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- OL_lineage@meta.data[, c("Cell_Type","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$Cell_Type, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Cell_Type,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(OL_lineage$Cell_Type,OL_lineage$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$Cell_Type)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$Cell_Type <- factor(ct_meta$Cell_Type,
+                                  levels = c("Fetal COP", "OPC", "Early OL","OL"))
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Cell_Type +dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+# write the DAP
+res_list_ct <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("Cell_Type",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(OL_lineage$Cell_Type == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  res_list_ct[[cell]] <- res.df
+}
+# save the cell type DAP
+write_xlsx(res_list_ct, path = "/output/OL_lineage_Cell_Type_DAP.xlsx")
+
+# add motif pwm to OL_lineage
+sq24 <- RSQLite::dbConnect(RSQLite::SQLite(), db(jaspar))
+motifs24 <- TFBSTools::getMatrixSet(sq24, list(species = "Homo sapiens", collection = "CORE"))
+sub <- AddMotifs(OL_lineage, genome = BSgenome.Hsapiens.UCSC.hg38, pfm = motifs24)
+ 
+# read in Cell_Type DAP
+sheetnames <- readxl::excel_sheets(path ="/output/OL_lineage_Cell_Type_DAP.xlsx")
+
+
+# split daps
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/OL_lineage_Cell_Type_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# Clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+
+DefaultAssay(sub) <- "RNA"
+
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  
+  res <- tryCatch({
+  DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "Cell_Type"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+
+    DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+    enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in different Cell_Type
+goi <- c("TEAD2","TEAD1","JUNB","ATF7","PPARD","RXRG","JUN","ATF3","EGR3","ZBED4","ASCL1","FOS","JUND","BACH1","VEZF1","TCF4","ZNF24","NFIC","SOX2","SOX13","SOX8","CTCF","NFYC","REST","FOXK1","FOXK2","FOXP1","TCFL5") %>% unique
+
+df<-read_xlsx(paste0("output/OPCvsAll_DAP_enrichedMotifs.xlsx"))#borrow the motif names from any motif analysis ouput
+list<-df$motif[df$motif.name %in% goi]
+names(list) <- df$motif.name[df$motif.name %in% goi]
+
+sub <- OL_lineage
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$Cell_Type
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+avg_mat_scaled <- scale(avg_mat)
+
+# RNA average expression across Cell_Type
+DefaultAssay(sub) <- "RNA"
+
+rna_avg <- AverageExpression(
+  sub,
+  assays = "RNA",
+  features = goi[goi %in% rownames(sub[["RNA"]])],
+  group.by = "Cell_Type",
+  slot = "data"
+)$RNA
+
+# keep Cell_Type order
+rna_avg <- rna_avg[, names(cellcolor)[names(cellcolor) %in% colnames(rna_avg)], drop = FALSE]
+
+# motif is kept if:
+# expression is above its own average in at least one dev group
+# and expression is not all zero
+rna_keep <- rownames(rna_avg)[
+  rowSums(rna_avg > rowMeans(rna_avg, na.rm = TRUE)) > 0 &
+    rowSums(rna_avg > 1.5) > 0
+]
+
+# chromVAR activity filter
+# keep motifs whose chromVAR average is > 0 in at least one dev group
+chromvar_keep <- rownames(avg_mat)[
+  rowSums(avg_mat > 0.1, na.rm = TRUE) > 0
+]
+
+# combine both filters
+goi_keep <- intersect(rna_keep, chromvar_keep)
+
+goi_keep
+length(goi_keep)
+
+avg_mat_use <- avg_mat[
+  goi_keep,
+  names(cellcolor)[names(cellcolor) %in% colnames(avg_mat)],
+  drop = FALSE
+]
+
+min_score <- min(avg_mat_use, na.rm = TRUE)
+max_score <- max(avg_mat_use, na.rm = TRUE)
+
+chromvar_col <- colorRamp2(
+  c(min_score, 0, max_score),
+  c("blue", "white", "red")
+)  
+h <- Heatmap(
+  t(avg_mat_use),
+  name = "chromVAR activity",
+  col = chromvar_col,
+  show_row_names = TRUE,
+  cluster_rows = FALSE,
+  column_names_side = "top",
+  cluster_columns = TRUE,
+  show_column_dend = FALSE,
+  row_order = names(cellcolor)[names(cellcolor) %in% colnames(avg_mat_use)]
+)
+
+# draw heatmap first
+ht <- draw(h)
+
+# get motif order from clustered heatmap columns
+goi_order <- rownames(avg_mat_use)[column_order(ht)]
+
+# keep only genes present in RNA
+goi_order <- goi_order[goi_order %in% rownames(sub[["RNA"]])]
+
+# RNA expression of motifs on ViolinPlot
+v <- VlnPlot(
+  sub,
+  features = goi_order,
+  group.by = "Cell_Type",
+  cols = cellcolor,
+  pt.size = 0,
+  assay = "RNA",
+  stack = TRUE,
+  fill.by = "ident"
+) +
+  NoLegend() +
+  scale_y_discrete(limits = rev(c("Fetal COP","OPC","Early OL","OL")))
+
+p_combined <- v + wrap_elements(grid::grid.grabExpr(draw(h)))
+p_combined
+```
+
+```{r Figure 3g}
+DefaultAssay(OL_lineage) <- "RNA"
+Idents(OL_lineage) <- "Cell_Type"
+
+# calculate DEG between different Cell_Type using DESeq2
+agg<-AggregateExpression(OL_lineage,assays="RNA", return.seurat=F, group.by=c("sample_id","Cell_Type"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- OL_lineage@meta.data[, c("Cell_Type","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$Cell_Type)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Cell_Type,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(OL_lineage$Cell_Type,OL_lineage$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$Cell_Type)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+ct_meta$Cell_Type <- factor(ct_meta$Cell_Type, levels = c("Fetal COP","OPC","Early OL","OL"))
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Cell_Type + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+res_list <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DEA))){
+  message(cell)
+  res <- results(dds, name=paste0("Cell_Type",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  if(length(res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1.5]) > 0) {
+    res.df$pct.expressed<- NA
+    res.df$pct.expressed[res.df$gene %in% res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1.5]] <- scCustomize::Percent_Expressing(OL_lineage, features = res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1.5], assay="RNA",group.by="Cell_Type")[,cell]
+  }
+  res_list[[cell]] <- res.df
+}
+
+# Load the genesets
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# For C5 gene ontology genesets
+C5genesets <- msigdbr(species = "Homo sapiens", category = "C5")
+C5togene <- C5genesets[,c("gs_exact_source","gene_symbol")]
+C5toname <- C5genesets[,c("gs_exact_source","gs_name")]
+
+# For GO Biological Process
+GOgenesets <- subset(C5genesets, subset=C5genesets[,"gs_subcat"]=="GO:BP")
+GOtogene <- GOgenesets[,c("gs_exact_source","gene_symbol")]
+GOtoname <- GOgenesets[,c("gs_exact_source","gs_name")]
+
+list <- c("Fetal.COP","OPC","Early.OL","OL")
+
+# get the GO Biological Process
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = res_list[[x]]$gene[res_list[[x]]$log2FoldChange > 1.5 &  res_list[[x]]$padj < 0.05 &  res_list[[x]]$pct.expressed > 10],
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtoname)
+})
+# GO Top5 Heatmap
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+  df <- as.data.frame(GO[[x]])
+  
+  if (nrow(df) == 0) {
+    return(character(0))
+  }
+  
+  df <- df[!is.na(df$p.adjust) & df$p.adjust < 0.05, ]
+  
+  if (nrow(df) == 0) {
+    return(character(0))
+  }
+  
+  df <- df[order(df$p.adjust, decreasing = FALSE), ]
+  desc <- df$Description
+  desc <- desc[1:min(5, length(desc))]
+  
+  return(desc)
+})
+
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <- lapply(list, function(subcluster){
+  Desc.df[subcluster] <- 0
+  
+  if (is.null(GO[[subcluster]])) {
+    return(Desc.df)
+  }
+  
+  Subcluster.Desc.df <- as.data.frame(GO[[subcluster]])
+  
+  if (nrow(Subcluster.Desc.df) == 0) {
+    return(Desc.df)
+  }
+  
+  Subcluster.Desc.df$qvalue <- as.numeric(Subcluster.Desc.df$qvalue)
+  Subcluster.Desc.df$p.adjust <- as.numeric(Subcluster.Desc.df$p.adjust)
+  
+  Subcluster.Desc.df$qvalue.scaled <- -log10(Subcluster.Desc.df$qvalue)
+  
+  sig <- data.frame(
+    Subcluster.Desc.df[
+      !is.na(Subcluster.Desc.df$p.adjust) &
+        Subcluster.Desc.df$p.adjust < 0.05,
+    ]
+  )
+  
+  sig <- sig[order(sig$p.adjust, decreasing = FALSE), ]
+  
+  Desc.df[sig$Description, subcluster] <- 
+    Subcluster.Desc.df[
+      match(sig$Description, Subcluster.Desc.df$Description),
+      "qvalue.scaled"
+    ]
+  
+  Desc.df <- Desc.df[unique(Desc), ]
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  
+  return(Desc.df)
+})
+
+df2 <- data.frame(cols)
+
+# keep only numeric columns
+df2_num <- df2[, sapply(df2, is.numeric), drop = FALSE]
+
+matrix_GO <- as.matrix(df2_num)
+rownames(matrix_GO) <- unique(Desc)
+
+matrix_GO <- scale(t(matrix_GO)) %>% t
+
+# annotation
+AnnoDF <- data.frame(names(cellcolor))
+colnames(AnnoDF) <- c("Cluster")
+AnnoDF$Cluster <- factor(AnnoDF$Cluster, levels =names(cellcolor))
+
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Cluster = c("Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f")))
+rownames(matrix_GO) <- gsub("GOBP_","", rownames(matrix_GO))
+rownames(matrix_GO) <- gsub("_"," ", rownames(matrix_GO))
+Desc <- gsub("GOBP_","", Desc)
+Desc <- gsub("_"," ", Desc)
+
+# draw the heatmap of GO biological processes difference between different Cell_Types
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE, row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_heatmap_legend = T)
+draw(plot_GO, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+```{r Figure 3h}
+# IF staining microscopy images
+```
+
+```{r Figure 3i}
+Idents(sobj) <- "Cell_Type"
+
+# subset out OPC for downstream analysis
+OPC <-subset(sobj, idents = c("OPC"))
+
+# run harmony to remove batch effect again on RNA assay
+DefaultAssay(OPC) <- "RNA"
+OPC <- OPC %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+OPC <- RunPCA(OPC, assay = "SCT", npcs = 50)
+OPC <- RunHarmony(OPC,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna")
+
+# normalize and SCT transform again after harmony
+DefaultAssay(OPC) <- "RNA"
+OPC <- OPC %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+# recluster OPC subset
+OPC <- OPC  %>%
+  RunUMAP(reduction = "rna", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8), verbose = TRUE)
+
+# run harmony to remove batch effect again on ATAC assay
+DefaultAssay(OPC) <- "ATAC" 
+OPC <- RunTFIDF(OPC) 
+OPC <- FindTopFeatures(OPC, min.cutoff = 'q0') 
+OPC <- RunSVD(OPC) 
+OPC <- RunUMAP(OPC, dims = 2:50, reduction = 'lsi')
+OPC <- RunHarmony(object = OPC, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac")
+OPC <- RunUMAP(OPC, dims = 2:50, reduction = 'atac', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+# run wnn on harmonized RNA and ATAC reduction
+OPC <- FindMultiModalNeighbors(OPC, reduction.list = list("rna", "atac"), dims.list = list(1:50, 2:50))
+OPC <- RunUMAP(OPC, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+OPC <- FindClusters(OPC, resolution = c(0.2, 0.4, 0.6, 0.8), graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+
+# set wnn resolution @ 0.4 for downstream analysis
+Idents(OPC) <- "wsnn_res.0.4"
+
+# based on DAP, DEG and canonical marker, we determined subtype of each cluster
+
+# set cluster identity to subtypes
+new_names <- c(
+  "0" = "Postnatal OPC",
+  "1" = "Postnatal OPC",
+  "2" = "Early Fetal OPC",
+  "3" = "Postnatal OPC",
+  "4" = "Late Fetal OPC",
+  "5" = "Late Fetal OPC",
+  "6" = "COP",
+  "7" = "COP",
+  "8" = "Early Fetal OPC",
+  "9" = "Postnatal OPC",
+  "10" = "Postnatal OPC",
+  "11" = "Late Fetal OPC",
+  "12" = "Postnatal OPC",
+  "13" = "Postnatal OPC",
+  "14" = "Postnatal OPC",
+  "15" = "Postnatal OPC",
+  "16" = "COP",
+  "17" = "Postnatal OPC",
+  "18" = "Postnatal OPC",
+  "19" = "Postnatal OPC",
+  "20" = "Postnatal OPC",
+  "21" = "Postnatal OPC",
+  "22" = "Postnatal OPC",
+  "23" = "Postnatal OPC",
+  "24" = "Postnatal OPC",
+  "25" = "Postnatal OPC"
+)
+
+OPC <- RenameIdents(OPC, new_names)
+
+OPC@active.ident <- factor(x = OPC@active.ident, levels = c("Early Fetal OPC", "Late Fetal OPC","Postnatal OPC", "COP"))
+
+# add metadata of Subtype
+OPC$Subtype <- OPC@active.ident
+
+# DimPlot using wnn.umap group by Subtype
+DimPlot(OPC, reduction = "wnn.umap", group.by = "Subtype",cols = OPC_subtype_colors)
+```
+
+```{r Figure 3j}
+# DimPlot using wnn.map group by "postnatal"
+DimPlot(OPC, group.by = "postnatal",reduction = "wnn.umap", cols = postnatalcolor)
+```
+
+```{r Figure 3k}
+DefaultAssay(OPC) <- "ATAC"
+OPC <- SetIdent(OPC, value = "Subtype")
+
+# calculate DAP between different Subtype using DESeq2 for later motif analysis
+mat <- GetAssayData(OPC, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(OPC,assays="ATAC", return.seurat=F, group.by=c("sample_id","Subtype"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- OPC@meta.data[, c("Subtype","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$Subtype, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Subtype,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(OPC$Subtype,OPC$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$Subtype)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$Subtype <- factor(ct_meta$Subtype,
+                                  levels = c("Early Fetal OPC", "Late Fetal OPC","Postnatal OPC", "COP"))
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Subtype
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+# write the DAP
+res_list_ct <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("Subtype",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(OPC$Subtype == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  res_list_ct[[cell]] <- res.df
+}
+# save the cell type DAP
+write_xlsx(res_list_ct, path = "/output/OPC_Subtype_DAP.xlsx")
+
+# add motif pwm to OPC
+sq24 <- RSQLite::dbConnect(RSQLite::SQLite(), db(jaspar))
+motifs24 <- TFBSTools::getMatrixSet(sq24, list(species = "Homo sapiens", collection = "CORE"))
+sub <- AddMotifs(OPC, genome = BSgenome.Hsapiens.UCSC.hg38, pfm = motifs24)
+
+# read in subtype DAP
+sheetnames <- readxl::excel_sheets(path ="/output/OPC_Subtype_DAP.xlsx")
+
+
+# split daps
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/OPC_Subtype_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# Clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+
+DefaultAssay(sub) <- "RNA"
+
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  
+  res <- tryCatch({
+  DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "Subtype"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+
+    DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+    enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in different subtypes
+goi <- c("RFX1","RFX3","RFX2","RFX4","RFX7","NFIC","NFIB","HOXD3","E2F3","POU6F2","CUX1","ZBED4","EPAS1","VEZF1","CUX2","TFDP1","NFYC","ASCL1","ELF2","REST","CREB3L1","TCF4","TCF12","NKX2-2","FOXK1") %>% unique
+
+df<-read_xlsx(paste0("output/OPCvsAll_DAP_enrichedMotifs.xlsx"))#borrow the motif names from any motif analysis ouput
+list<-df$motif[df$motif.name %in% goi]
+names(list) <- df$motif.name[df$motif.name %in% goi]
+
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$Subtype
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+avg_mat_scaled <- scale(avg_mat)
+
+# RNA average expression across Subtype
+DefaultAssay(sub) <- "RNA"
+
+rna_avg <- AverageExpression(
+  sub,
+  assays = "RNA",
+  features = goi[goi %in% rownames(sub[["RNA"]])],
+  group.by = "Subtype",
+  slot = "data"
+)$RNA
+
+# keep Subtype order
+rna_avg <- rna_avg[, names(cellcolor)[names(cellcolor) %in% colnames(rna_avg)], drop = FALSE]
+
+# motif is kept if:
+# expression is above its own average in at least one dev group
+# and expression is not all zero
+rna_keep <- rownames(rna_avg)[
+  rowSums(rna_avg > rowMeans(rna_avg, na.rm = TRUE)) > 0 &
+    rowSums(rna_avg > 1.5) > 0
+]
+
+# chromVAR activity filter
+# keep motifs whose chromVAR average is > 0 in at least one dev group
+chromvar_keep <- rownames(avg_mat)[
+  rowSums(avg_mat > 0.1, na.rm = TRUE) > 0
+]
+
+#combine both filters
+goi_keep <- intersect(rna_keep, chromvar_keep)
+
+goi_keep
+length(goi_keep)
+
+avg_mat_use <- avg_mat[
+  goi_keep,
+  names(cellcolor)[names(cellcolor) %in% colnames(avg_mat)],
+  drop = FALSE
+]
+
+min_score <- min(avg_mat_use, na.rm = TRUE)
+max_score <- max(avg_mat_use, na.rm = TRUE)
+
+chromvar_col <- colorRamp2(
+  c(min_score, 0, max_score),
+  c("blue", "white", "red")
+)  
+h <- Heatmap(
+  t(avg_mat_use),
+  name = "chromVAR activity",
+  col = chromvar_col,
+  show_row_names = TRUE,
+  cluster_rows = FALSE,
+  column_names_side = "top",
+  cluster_columns = TRUE,
+  show_column_dend = FALSE,
+  row_order = names(cellcolor)[names(cellcolor) %in% colnames(avg_mat_use)]
+)
+
+# draw heatmap first
+ht <- draw(h)
+
+# get motif order from clustered heatmap columns
+goi_order <- rownames(avg_mat_use)[column_order(ht)]
+
+# keep only genes present in RNA
+goi_order <- goi_order[goi_order %in% rownames(sub[["RNA"]])]
+
+# RNA expression of motifs on ViolinPlot
+v <- VlnPlot(
+  sub,
+  features = goi_order,
+  group.by = "Subtype",
+  cols = cellcolor,
+  pt.size = 0,
+  assay = "RNA",
+  stack = TRUE,
+  fill.by = "ident"
+) +
+  NoLegend() +
+  scale_y_discrete(limits = rev(c("Early Fetal OPC", "Late Fetal OPC","Postnatal OPC", "COP")))
+
+p_combined <- v + wrap_elements(grid::grid.grabExpr(draw(h)))
+p_combined
+```
+
+```{r Figure 3l}
+Postnatal_OPC <- subset(RGL_Astrocyte_harmony, Subtype == "Postnatal OPC" & dev.group != "Fetal")
+DefaultAssay(Postnatal_OPC) <- "RNA"
+Idents(Postnatal_OPC) <- "dev.group"
+
+# calculate DEG between different age groups in postnatal OPC using DESeq2
+agg<-AggregateExpression(Postnatal_OPC,assays="RNA", return.seurat=F, group.by=c("sample_id","dev.group"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- Postnatal_OPC@meta.data[, c("dev.group","sample_id","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$dev.group)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$dev.group,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+
+cellcount<-table(Postnatal_OPC$dev.group,Postnatal_OPC$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$dev.group)
+
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+res_list_ct <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DEA))){
+  message(cell)
+  res <- results(dds, name=paste0("dev.group",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  if(length(res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1]) > 0) {
+    res.df$pct.expressed<- NA
+    res.df$pct.expressed[res.df$gene %in% res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1]] <- scCustomize::Percent_Expressing(Postnatal_OPC, features = res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1], assay="RNA",group.by="dev.group")[,cell]
+  }
+  res_list_ct[[cell]] <- res.df
+}
+
+# write DEG
+write.xlsx(res_list_ct, "/output/Postnatal_OPC_Age_DEG.xlsx")
+
+# read in DEG
+sheetnames <- excel_sheets("/output/Postnatal_OPC_Age_DEG.xlsx")
+degs<-lapply(sheetnames, function(sheet) {
+  read_xlsx("/output/Postnatal_OPC_Age_DEG.xlsx", sheet=sheet)
+})
+names(degs) <- sheetnames
+
+top_degs <- list()
+for(cell in sheetnames){
+  res.df <- degs[[cell]]
+  print(cell)
+  top_degs[[cell]] <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1 & !is.na(res.df$padj) & res.df$pct.expressed > 5]
+  
+}
+top_degs_unique<-c(top_degs$Infant, top_degs$Child,top_degs$Adolescent, top_degs$Adult) %>% unique()
+
+top.mat<-GetAssayData(Postnatal_OPC, assay="RNA")
+top.mat<-top.mat[c(top_degs_unique),] %>% as.matrix
+
+colData <- data.frame(dev.group = factor(Postnatal_OPC$dev.group[colnames(top.mat)], levels=names(devcolor)[2:5]), sample_id = Postnatal_OPC$sample_id) 
+
+top.mat <- top.mat[,order(colData$dev.group)]
+colData <- colData[order(colData$dev.group),]
+
+col_ha <- HeatmapAnnotation(
+  dev_group = colData$dev.group,
+  col = list(dev_group = devcolor[2:5])
+)
+
+jet.colors <- colorRamp2::colorRamp2(
+  c(0, 2, 5),
+  hcl_palette = "Reds",
+  reverse=T
+)
+
+
+jet.colors <- colorRamp2::colorRamp2(
+  seq(-2, 6, length.out = 5),
+  c("blue", "lightblue", "yellow", "orange", "red")
+)
+
+# plot top DEG in each age group on heatmap
+Heatmap(
+  t(scale(t(as.matrix(top.mat)))),
+  name = "Expression",
+  top_annotation = col_ha,
+  show_row_names = T,
+  show_column_names = FALSE,
+  cluster_columns = F,
+  cluster_rows = F,
+  col = jet.colors
+)
+```
+
+```{r save RDS object}
+saveRDS(OL_lineage, "/output/objects/OL_lineage.RDS")
+saveRDS(OPC, "/output/objects/OPC.RDS")
+```
+
+
+
+
+

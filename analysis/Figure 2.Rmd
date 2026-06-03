@@ -1,0 +1,1864 @@
+---
+title: "Figure 2"
+author: "Sheldon Ding"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r color}
+devcolor <- c("Fetal" = "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+postnatalcolor <- c("Fetal" = "#0D0887", "Postnatal" = "#F0F921")
+
+RGL_Astrocyte_subtype_color = c("Radial Glia" = "#e2e700", "CD44-hi Astrocyte" = "#FFA500","EAAT2-hi Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#4F4F4F")
+
+```
+
+
+###Figure 2
+```{r Figure 2a}
+Idents(sobj) <- "Cell_Type"
+
+# subset out Radial Glia and Astrocyte for downstream analysis
+RGL_Astrocyte <-subset(sobj, idents = c("Radial Glia", "Astrocyte"))
+
+# run harmony to remove batch effect again on RNA assay
+DefaultAssay(RGL_Astrocyte) <- "RNA"
+RGL_Astrocyte <- RGL_Astrocyte %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+RGL_Astrocyte <- RunPCA(RGL_Astrocyte, assay = "SCT", npcs = 50)
+RGL_Astrocyte <- RunHarmony(RGL_Astrocyte,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna")
+
+# normalize and SCT transform again after harmony
+DefaultAssay(RGL_Astrocyte) <- "RNA"
+RGL_Astrocyte <- RGL_Astrocyte %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+
+# recluster RGL_Astrocyte subset
+RGL_Astrocyte <- RGL_Astrocyte  %>%
+  RunUMAP(reduction = "rna", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8), verbose = TRUE)
+
+# run harmony to remove batch effect again on ATAC assay
+DefaultAssay(RGL_Astrocyte) <- "ATAC" 
+RGL_Astrocyte <- RunTFIDF(RGL_Astrocyte) 
+RGL_Astrocyte <- FindTopFeatures(RGL_Astrocyte, min.cutoff = 'q0') 
+RGL_Astrocyte <- RunSVD(RGL_Astrocyte) 
+RGL_Astrocyte <- RunUMAP(RGL_Astrocyte, dims = 2:50, reduction = 'lsi')
+RGL_Astrocyte <- RunHarmony(object = RGL_Astrocyte, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac")
+RGL_Astrocyte <- RunUMAP(RGL_Astrocyte, dims = 2:50, reduction = 'atac', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+
+# run wnn on harmonized RNA and ATAC reduction
+RGL_Astrocyte <- FindMultiModalNeighbors(RGL_Astrocyte, reduction.list = list("rna", "atac"), dims.list = list(1:50, 2:50))
+RGL_Astrocyte <- RunUMAP(RGL_Astrocyte, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+RGL_Astrocyte <- FindClusters(RGL_Astrocyte, resolution = c(0.2, 0.4, 0.6, 0.8), graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+
+# DimPlot using wnn.map group by postnatal
+DimPlot(RGL_Astrocyte, group.by = "postnatal",reduction = "wnn.umap", cols = devcolor)
+
+
+# annotate the Subtype with DEG and cell markers
+RGL_Astrocyte$Subtype <- ""
+
+RGL_Astrocyte@meta.data[which(RGL_Astrocyte$wsnn_res.0.2 %in% c(0,3,4,5,7,15,22)),"Subtype"] <- "Radial Glia" #
+
+RGL_Astrocyte@meta.data[which(RGL_Astrocyte$wsnn_res.0.2 %in% c(1,9:13,16,18:20,23,24)),"Subtype"] <- "CD44-hi Astrocyte" #
+
+RGL_Astrocyte@meta.data[which(RGL_Astrocyte$wsnn_res.0.2 %in% c(2,14,17,21)),"Subtype"] <- "EAAT2-hi Astrocyte" #
+
+RGL_Astrocyte@meta.data[which(RGL_Astrocyte$wsnn_res.0.2 %in% c(6)),"Subtype"] <- "Undetermined Astrocyte"#
+
+RGL_Astrocyte@meta.data[which(RGL_Astrocyte$wsnn_res.0.2 %in% c(8)),"Subtype"] <- "OL-like Astrocyte" #
+
+# DimPlot using wnn.umap group by Subtype
+DimPlot(RGL_Astrocyte, group.by = "Subtype",reduction = "wnn.umap", cols = RGL_Astrocyte_subtype_color)
+```
+
+```{r Figure 2b}
+DefaultAssay(RGL_Astrocyte) <- "RNA"
+Idents(RGL_Astrocyte) <- "Subtype"
+
+# calculate DEG between different subtypes using DESeq2
+agg<-AggregateExpression(RGL_Astrocyte,assays="RNA", return.seurat=F, group.by=c("sample_id","Subtype"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- RGL_Astrocyte@meta.data[, c("Subtype","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$Subtype)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Subtype,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(RGL_Astrocyte$Subtype,RGL_Astrocyte$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$Subtype)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+ct_meta$Subtype <- factor(ct_meta$Subtype, levels = c("Radial Glia", "CD44 hi Astrocyte", "EAAT2 hi Astrocyte","OL like Astrocyte","Undetermined Astrocyte"))
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Subtype
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+res_list_Astro <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DEA))){
+  message(cell)
+  res <- results(dds, name=paste0("Subtype",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  if(length(res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1.5]) > 0) {
+    res.df$pct.expressed<- NA
+    res.df$pct.expressed[res.df$gene %in% res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1.5]] <- scCustomize::Percent_Expressing(RGL_Astrocyte, features = res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1.5], assay="RNA",group.by="Subtype")[,cell]
+  }
+  res_list_Astro[[cell]] <- res.df
+}
+
+# Load the genesets
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# For C5 gene ontology genesets
+C5genesets <- msigdbr(species = "Homo sapiens", category = "C5")
+C5togene <- C5genesets[,c("gs_exact_source","gene_symbol")]
+C5toname <- C5genesets[,c("gs_exact_source","gs_name")]
+
+# For GO Biological Process
+GOgenesets <- subset(C5genesets, subset=C5genesets[,"gs_subcat"]=="GO:BP")
+GOtogene <- GOgenesets[,c("gs_exact_source","gene_symbol")]
+GOtoname <- GOgenesets[,c("gs_exact_source","gs_name")]
+
+list <- c("Radial.Glia", "CD44.hi.Astrocyte", "EAAT2.hi.Astrocyte"
+          ,"OL.like.Astrocyte","Undetermined.Astrocyte")
+
+# get the GO Biological Process
+GO <- lapply(list, function (x)
+{
+  print(x)
+  y <- enricher(gene = res_list_Astro[[x]]$gene[res_list_Astro[[x]]$log2FoldChange > 1.5 &  res_list_Astro[[x]]$padj < 0.05 &  res_list_Astro[[x]]$pct.expressed > 10],
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                minGSSize = 15,
+                maxGSSize = 1000,
+                qvalueCutoff = 0.2,
+                TERM2GENE = GOtogene,
+                TERM2NAME = GOtoname)
+})
+# GO Top5 Heatmap
+names(GO) <- list
+Desc_list <- lapply(list, function(x){
+  df <- as.data.frame(GO[[x]])
+  
+  if (nrow(df) == 0) {
+    return(character(0))
+  }
+  
+  df <- df[!is.na(df$p.adjust) & df$p.adjust < 0.05, ]
+  
+  if (nrow(df) == 0) {
+    return(character(0))
+  }
+  
+  df <- df[order(df$p.adjust, decreasing = FALSE), ]
+  desc <- df$Description
+  desc <- desc[1:min(5, length(desc))]
+  
+  return(desc)
+})
+
+Desc <- unlist(Desc_list) %>% unique()
+Desc.df <- as.data.frame(Desc)
+Desc.df <- na.omit(Desc.df)
+rownames(Desc.df) <- Desc.df$Desc
+Desc <- na.omit(Desc)
+cols <- lapply(list, function(subcluster){
+  Desc.df[subcluster] <- 0
+  
+  if (is.null(GO[[subcluster]])) {
+    return(Desc.df)
+  }
+  
+  Subcluster.Desc.df <- as.data.frame(GO[[subcluster]])
+  
+  if (nrow(Subcluster.Desc.df) == 0) {
+    return(Desc.df)
+  }
+  
+  Subcluster.Desc.df$qvalue <- as.numeric(Subcluster.Desc.df$qvalue)
+  Subcluster.Desc.df$p.adjust <- as.numeric(Subcluster.Desc.df$p.adjust)
+  
+  Subcluster.Desc.df$qvalue.scaled <- -log10(Subcluster.Desc.df$qvalue)
+  
+  sig <- data.frame(
+    Subcluster.Desc.df[
+      !is.na(Subcluster.Desc.df$p.adjust) &
+        Subcluster.Desc.df$p.adjust < 0.05,
+    ]
+  )
+  
+  sig <- sig[order(sig$p.adjust, decreasing = FALSE), ]
+  
+  Desc.df[sig$Description, subcluster] <- 
+    Subcluster.Desc.df[
+      match(sig$Description, Subcluster.Desc.df$Description),
+      "qvalue.scaled"
+    ]
+  
+  Desc.df <- Desc.df[unique(Desc), ]
+  rownames(Desc.df) <- Desc.df$Desc
+  Desc.df$Desc <- NULL
+  
+  return(Desc.df)
+})
+
+df2 <- data.frame(cols)
+
+# keep only numeric columns
+df2_num <- df2[, sapply(df2, is.numeric), drop = FALSE]
+
+matrix_GO <- as.matrix(df2_num)
+rownames(matrix_GO) <- unique(Desc)
+
+matrix_GO <- scale(t(matrix_GO)) %>% t
+
+# annotation
+AnnoDF <- data.frame(names(RGL_Astrocyte_subcluster_color))
+colnames(AnnoDF) <- c("Cluster")
+AnnoDF$Cluster <- factor(AnnoDF$Cluster, levels =names(RGL_Astrocyte_subcluster_color))
+
+library(ComplexHeatmap)
+colAnno <- HeatmapAnnotation(
+  df=AnnoDF,
+  show_annotation_name = c(TRUE,TRUE),
+  annotation_name_gp = gpar(fontsize = 12),
+  annotation_name_side = "left",
+  col = list(Cluster = c("Radial.Glia" = "#e2e700", "CD44.hi.Astrocyte" = "#FFA500","EAAT2.hi.Astrocyte" = "#FF4F00","OL.like.Astrocyte" = "#C2A162","Undetermined.Astrocyte" = "#4F4F4F")))
+rownames(matrix_GO) <- gsub("GOBP_","", rownames(matrix_GO))
+rownames(matrix_GO) <- gsub("_"," ", rownames(matrix_GO))
+Desc <- gsub("GOBP_","", Desc)
+Desc <- gsub("_"," ", Desc)
+
+# draw the heatmap of GO biological processes difference between different subtypes
+plot_GO <- Heatmap(matrix_GO, cluster_columns=F,cluster_rows =FALSE, row_order = Desc, row_names_gp = gpar(fontsize = 5),top_annotation = colAnno, show_heatmap_legend = T)
+draw(plot_GO, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+```{r Figure 2c}
+DefaultAssay(RGL_Astrocyte) <- "RNA"
+Idents(RGL_Astrocyte) <- "Cell_Type"
+
+# calculate the DEG between Radial Glia an Astrocyte
+agg<-AggregateExpression(RGL_Astrocyte,assays="RNA", return.seurat=F, group.by=c("sample_id","Cell_Type"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- RGL_Astrocyte@meta.data[, c("Cell_Type","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$Cell_Type)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Cell_Type,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+
+cellcount<-table(RGL_Astrocyte$Cell_Type,RGL_Astrocyte$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+all(rownames(meta_unique) == colnames(pb))
+
+
+DEA <- unique(meta_unique$Cell_Type)
+
+
+ct.1 <- "Astrocyte"
+ct.2 <- "Radial Glia"
+keep <- (meta_unique$Cell_Type == ct.1 | meta_unique$Cell_Type == ct.2)
+
+ct_counts <- pb[, keep]
+ct_meta   <- meta_unique[keep, ]
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+ct_meta$Subtype <- factor(ct_meta$Subtype, levels = c(ct.2, ct.1))
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Subtype
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds)
+vsd <- vst(dds)
+
+res <- results(dds, name="Subtype_Radial.Glia_vs_Astrocyte")
+res <- lfcShrink(dds,
+                 coef="Subtype_Radial.Glia_vs_Astrocyte",
+                 res=res, type = "normal")
+res.df<-res %>% data.frame
+
+
+res_tbl <- res %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>%
+  as_tibble()
+
+# set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+# set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+res_table_thres$threshold[is.na(res_table_thres$threshold)]<-FALSE
+
+Top_Hits <- head(arrange(res_table_thres, padj), 10)
+Top_Hits <- rbind(Top_Hits, head(arrange(res_table_thres[res_table_thres$log2FoldChange >=1,], desc(log2FoldChange)), 5))
+
+# Create the 'label' column: gene name for top hits, NULL otherwise
+res_table_thres$label <- if_else(res_table_thres$gene %in% Top_Hits$gene, res_table_thres$gene, as.character(NA))
+
+# top hits DEG beteen Radial Glia an Astrocyte volcano plot
+ggplot(data=res_table_thres, aes(x=log2FoldChange, y=-1*log10(padj), color=threshold)) +geom_point(size=1) + scale_color_manual(values= c("black","red3")) + geom_vline(xintercept = 1,linetype = "dashed")+geom_vline(xintercept = -1,linetype = "dashed")+geom_hline(yintercept = -1*log10(0.05),linetype = "dashed")+theme_bw() + ggrepel::geom_text_repel(
+  aes(label = label),
+  size = 3,        
+  box.padding = 0.5,
+  point.padding = 0.5,
+  segment.color = 'grey50', 
+  show.legend = FALSE,
+  color="black"
+)
+```
+
+```{r Figure 2d}
+DefaultAssay(RGL_Astrocyte) <- "RNA"
+Idents(RGL_Astrocyte) <- "Subtype"
+
+# calculate the DEG between CD44-hi Astrocyte and EAAT2-hi Astrocyte
+agg<-AggregateExpression(RGL_Astrocyte,assays="RNA", return.seurat=F, group.by=c("sample_id","Subtype"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- RGL_Astrocyte@meta.data[, c("Subtype","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$Subtype)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Subtype,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(RGL_Astrocyte$Subtype,RGL_Astrocyte$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+
+all(rownames(meta_unique) == colnames(pb))
+
+ct.1 <- "CD44-hi Astrocyte"
+ct.2 <- "EAAT2-hi Astrocyte"
+keep <- (meta_unique$Subtype == ct.1 | meta_unique$Subtype == ct.2)
+
+ct_counts <- pb[, keep]
+ct_meta   <- meta_unique[keep, ]
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+ct_meta$Subtype <- factor(ct_meta$Subtype, levels = c(ct.2, ct.1))
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Subtype + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds)
+vsd <- vst(dds)
+
+res <- results(dds, name="Subtype_CD44.hi.Astrocyte_vs_EAAT2.hi.Astrocyte")
+res <- lfcShrink(dds,
+                 coef="Subtype_CD44.hi.Astrocyte_vs_EAAT2.hi.Astrocyte",
+                 res=res, type = "normal")
+res.df<-res %>% data.frame
+
+
+res_tbl <- res %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>%
+  as_tibble()
+
+# set thresholds
+padj_cutoff <- 0.05
+res_table_thres <- res_tbl %>% 
+  mutate(threshold = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+# set comparison direction
+res_table_thres$direction <- ""
+res_table_thres$direction[!is.na(sign(res_table_thres$log2FoldChange))] <- ifelse(sign(res_table_thres$log2FoldChange[!is.na(sign(res_table_thres$log2FoldChange))])==-1, yes = "down", no = "up")
+res_table_thres$threshold[is.na(res_table_thres$threshold)]<-FALSE
+
+Top_Hits <- head(arrange(res_table_thres, padj), 10)
+Top_Hits <- rbind(Top_Hits, head(arrange(res_table_thres[res_table_thres$log2FoldChange >=1,], desc(log2FoldChange)), 5))
+
+# Create the 'label' column: gene name for top hits, NULL otherwise
+res_table_thres$label <- if_else(res_table_thres$gene %in% Top_Hits$gene, res_table_thres$gene, as.character(NA))
+
+# top hits DEG beteen CD44-hi Astrocyte and EAAT2-hi Astrocyte volcano plot
+ggplot(data=res_table_thres, aes(x=log2FoldChange, y=-1*log10(padj), color=threshold)) +geom_point(size=1) + scale_color_manual(values= c("black","red3")) + geom_vline(xintercept = 1,linetype = "dashed")+geom_vline(xintercept = -1,linetype = "dashed")+geom_hline(yintercept = -1*log10(0.05),linetype = "dashed")+theme_bw() + ggrepel::geom_text_repel(
+  aes(label = label),
+  size = 3,        
+  box.padding = 0.5,
+  point.padding = 0.5,
+  segment.color = 'grey50', 
+  show.legend = FALSE,
+  color="black"
+)
+```
+
+```{r Figure 2e}
+DefaultAssay(RGL_Astrocyte) <- "ATAC"
+RGL_Astrocyte <- SetIdent(RGL_Astrocyte, value = "Subtype")
+
+# subset different subtypes for next step
+RGL_Astrocyte <-subset(RGL_Astrocyte, idents = c("Radial Glia", "CD-hi Astrocyte", "EAAT2-hi Astrocyte"))
+
+# calculate DAP between different subtypes using DESeq2 for later motif analysis
+mat <- GetAssayData(RGL_Astrocyte, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(RGL_Astrocyte,assays="ATAC", return.seurat=F, group.by=c("sample_id","Subtype"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- RGL_Astrocyte@meta.data[, c("Subtype","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$Subtype, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Subtype,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(RGL_Astrocyte$Subtype,RGL_Astrocyte$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$Subtype)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$Subtype <- factor(ct_meta$Subtype,
+                                  levels = c("Radial Glia", "CD44-hi Astrocyte", "EAAT2-hi Astrocyte"))
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Subtype
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+# write the DAP
+res_list_ct <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("Subtype",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(RGL_Astrocyte$Subtype == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  res_list_ct[[cell]] <- res.df
+}
+# save the cell type DAP
+write_xlsx(res_list_ct, path = "/output/RGL_CD44_EAAT2_Subtype_DAP.xlsx")
+
+# add motif pwm to RGL_Astrocyte
+sq24 <- RSQLite::dbConnect(RSQLite::SQLite(), db(jaspar))
+motifs24 <- TFBSTools::getMatrixSet(sq24, list(species = "Homo sapiens", collection = "CORE"))
+sub <- AddMotifs(RGL_Astrocyte, genome = BSgenome.Hsapiens.UCSC.hg38, pfm = motifs24)
+
+# read in subtype DAP
+sheetnames <- readxl::excel_sheets(path ="/output/RGL_CD44_EAAT2_Subtype_DAP.xlsx")
+
+
+# split daps
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/RGL_CD44_EAAT2_Subtype_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# Clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+
+DefaultAssay(sub) <- "RNA"
+
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  
+  res <- tryCatch({
+  DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "Subtype"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+
+    DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+    enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in different subtypes
+goi <- c("ZBED4","RFX3","RFX1","RFX2","TFDP1","KLF12","RFX4","VEZF1","RFX7",
+         "EPAS1","NR3C1","BACH2","NR3C2","JUN","JUNB","FOS","BNC2","BHLHE41",
+         "REST","E2F3","TEF","RORB","KLF15","ZNF76","TCF4","ETV1") %>% unique
+
+df<-read_xlsx(paste0("output/OPCvsAll_DAP_enrichedMotifs.xlsx"))#borrow the motif names from any motif analysis ouput
+list<-df$motif[df$motif.name %in% goi]
+names(list) <- df$motif.name[df$motif.name %in% goi]
+
+sub <- RGL_Astrocyte
+over1k<-table(sub$Cell_Type)[table(sub$Cell_Type) > 1000] %>% names()
+cells.trunc<-rownames(sub@meta.data[sub$Cell_Type %in% over1k,])
+sub <- subset(sub, cells = cells.trunc)
+
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$Subtype
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+avg_mat_scaled <- scale(avg_mat)
+
+# RNA average expression across Subtype
+DefaultAssay(sub) <- "RNA"
+
+rna_avg <- AverageExpression(
+  sub,
+  assays = "RNA",
+  features = goi[goi %in% rownames(sub[["RNA"]])],
+  group.by = "Subtype",
+  slot = "data"
+)$RNA
+
+# keep Subtype order
+rna_avg <- rna_avg[, names(cellcolor)[names(cellcolor) %in% colnames(rna_avg)], drop = FALSE]
+
+# motif is kept if:
+# expression is above its own average in at least one dev group
+# and expression is not all zero
+rna_keep <- rownames(rna_avg)[
+  rowSums(rna_avg > rowMeans(rna_avg, na.rm = TRUE)) > 0 &
+    rowSums(rna_avg > 1.5) > 0
+]
+
+# chromVAR activity filter
+# keep motifs whose chromVAR average is > 0 in at least one dev group
+chromvar_keep <- rownames(avg_mat)[
+  rowSums(avg_mat > 0.1, na.rm = TRUE) > 0
+]
+
+# combine both filters
+goi_keep <- intersect(rna_keep, chromvar_keep)
+
+goi_keep
+length(goi_keep)
+
+avg_mat_use <- avg_mat[
+  goi_keep,
+  names(cellcolor)[names(cellcolor) %in% colnames(avg_mat)],
+  drop = FALSE
+]
+
+min_score <- min(avg_mat_use, na.rm = TRUE)
+max_score <- max(avg_mat_use, na.rm = TRUE)
+
+chromvar_col <- colorRamp2(
+  c(min_score, 0, max_score),
+  c("blue", "white", "red")
+)  
+h <- Heatmap(
+  t(avg_mat_use),
+  name = "chromVAR activity",
+  col = chromvar_col,
+  show_row_names = TRUE,
+  cluster_rows = FALSE,
+  column_names_side = "top",
+  cluster_columns = TRUE,
+  show_column_dend = FALSE,
+  row_order = names(cellcolor)[names(cellcolor) %in% colnames(avg_mat_use)]
+)
+
+# draw heatmap first
+ht <- draw(h)
+
+# get motif order from clustered heatmap columns
+goi_order <- rownames(avg_mat_use)[column_order(ht)]
+
+# keep only genes present in RNA
+goi_order <- goi_order[goi_order %in% rownames(sub[["RNA"]])]
+
+# RNA expression of motifs on ViolinPlot
+v <- VlnPlot(
+  sub,
+  features = goi_order,
+  group.by = "Subtype",
+  cols = cellcolor,
+  pt.size = 0,
+  assay = "RNA",
+  stack = TRUE,
+  fill.by = "ident"
+) +
+  NoLegend() +
+  scale_y_discrete(limits = rev(c("Radial Glia" , "CD44-hi Astrocyte","EAAT2-hi Astrocyte")))
+
+p_combined <- v + wrap_elements(grid::grid.grabExpr(draw(h)))
+p_combined
+```
+
+```{r Figure 2f}
+CD44 <- subset(RGL_Astrocyte_harmony, Subtype == "CD44" & dev.group != "Fetal")
+DefaultAssay(CD44) <- "RNA"
+Idents(CD44) <- "dev.group"
+
+# calculate DEG between different age groups in postnatal CD44-hi Astrocyte using DESeq2
+agg<-AggregateExpression(CD44,assays="RNA", return.seurat=F, group.by=c("sample_id","dev.group"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- CD44@meta.data[, c("dev.group","sample_id","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$dev.group)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$dev.group,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+
+cellcount<-table(CD44$dev.group,CD44$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$dev.group)
+
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+res_list_ct <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DEA))){
+  message(cell)
+  res <- results(dds, name=paste0("dev.group",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  if(length(res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1]) > 0) {
+    res.df$pct.expressed<- NA
+    res.df$pct.expressed[res.df$gene %in% res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1]] <- scCustomize::Percent_Expressing(CD44, features = res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1], assay="RNA",group.by="dev.group")[,cell]
+  }
+  res_list_ct[[cell]] <- res.df
+}
+
+# write DEG
+write.xlsx(res_list_ct, "/output/CD44_hi_Astrocyte_Age_DEG.xlsx")
+
+# read in DEG
+sheetnames <- excel_sheets("/output/CD44_hi_Astrocyte_Age_DEG.xlsx")
+degs<-lapply(sheetnames, function(sheet) {
+  read_xlsx("/output/CD44_hi_Astrocyte_Age_DEG.xlsx", sheet=sheet)
+})
+names(degs) <- sheetnames
+
+top_degs <- list()
+for(cell in sheetnames){
+  res.df <- degs[[cell]]
+  print(cell)
+  top_degs[[cell]] <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1 & !is.na(res.df$padj) & res.df$pct.expressed > 5]
+  
+}
+top_degs_unique<-c(top_degs$Infant, top_degs$Child,top_degs$Adolescent, top_degs$Adult) %>% unique()
+
+top.mat<-GetAssayData(CD44, assay="RNA")
+top.mat<-top.mat[c(top_degs_unique),] %>% as.matrix
+
+colData <- data.frame(dev.group = factor(CD44$dev.group[colnames(top.mat)], levels=names(devcolor)[2:5]), sample_id = CD44$sample_id) 
+
+top.mat <- top.mat[,order(colData$dev.group)]
+colData <- colData[order(colData$dev.group),]
+
+col_ha <- HeatmapAnnotation(
+  dev_group = colData$dev.group,
+  col = list(dev_group = devcolor[2:5])
+)
+
+jet.colors <- colorRamp2::colorRamp2(
+  c(0, 2, 5),
+  hcl_palette = "Reds",
+  reverse=T
+)
+
+
+jet.colors <- colorRamp2::colorRamp2(
+  seq(-2, 6, length.out = 5),
+  c("blue", "lightblue", "yellow", "orange", "red")
+)
+
+# plot top DEG in each age group on heatmap
+Heatmap(
+  t(scale(t(as.matrix(top.mat)))),
+  name = "Expression",
+  top_annotation = col_ha,
+  show_row_names = T,
+  show_column_names = FALSE,
+  cluster_columns = F,
+  cluster_rows = F,
+  col = jet.colors
+)
+```
+
+```{r Figure 2g}
+EAAT2 <- subset(RGL_Astrocyte_harmony, Subtype == "EAAT2" & dev.group != "Fetal")
+DefaultAssay(EAAT2) <- "RNA"
+Idents(EAAT2) <- "dev.group"
+
+# calculate DEG between different age groups in postnatal EAAT2-hi Astrocyte using DESeq2
+agg<-AggregateExpression(EAAT2,assays="RNA", return.seurat=F, group.by=c("sample_id","dev.group"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- EAAT2@meta.data[, c("dev.group","sample_id","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$dev.group)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$dev.group,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+
+cellcount<-table(EAAT2$dev.group,EAAT2$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$dev.group)
+
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+res_list_ct <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DEA))){
+  message(cell)
+  res <- results(dds, name=paste0("dev.group",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  if(length(res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1]) > 0) {
+    res.df$pct.expressed<- NA
+    res.df$pct.expressed[res.df$gene %in% res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1]] <- scCustomize::Percent_Expressing(EAAT2, features = res.df$gene[complete.cases(res.df[, c("padj", "log2FoldChange")]) &res.df$padj < 0.05 & res.df$log2FoldChange > 1], assay="RNA",group.by="dev.group")[,cell]
+  }
+  res_list_ct[[cell]] <- res.df
+}
+
+# write DEG
+write.xlsx(res_list_ct, "/output/EAAT2_hi_Astrocyte_Age_DEG.xlsx")
+
+# read in DEG
+sheetnames <- excel_sheets("/output/EAAT2_hi_Astrocyte_Age_DEG.xlsx")
+degs<-lapply(sheetnames, function(sheet) {
+  read_xlsx("/output/EAAT2_hi_Astrocyte_Age_DEG.xlsx", sheet=sheet)
+})
+names(degs) <- sheetnames
+
+top_degs <- list()
+for(cell in sheetnames){
+  res.df <- degs[[cell]]
+  print(cell)
+  top_degs[[cell]] <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1 & !is.na(res.df$padj) & res.df$pct.expressed > 5]
+  
+}
+top_degs_unique<-c(top_degs$Infant, top_degs$Child,top_degs$Adolescent, top_degs$Adult) %>% unique()
+
+top.mat<-GetAssayData(EAAT2, assay="RNA")
+top.mat<-top.mat[c(top_degs_unique),] %>% as.matrix
+
+colData <- data.frame(dev.group = factor(EAAT2$dev.group[colnames(top.mat)], levels=names(devcolor)[2:5]), sample_id = EAAT2$sample_id) 
+
+top.mat <- top.mat[,order(colData$dev.group)]
+colData <- colData[order(colData$dev.group),]
+
+col_ha <- HeatmapAnnotation(
+  dev_group = colData$dev.group,
+  col = list(dev_group = devcolor[2:5])
+)
+
+jet.colors <- colorRamp2::colorRamp2(
+  c(0, 2, 5),
+  hcl_palette = "Reds",
+  reverse=T
+)
+
+
+jet.colors <- colorRamp2::colorRamp2(
+  seq(-2, 6, length.out = 5),
+  c("blue", "lightblue", "yellow", "orange", "red")
+)
+
+#plot top DEG in each age group on heatmap
+Heatmap(
+  t(scale(t(as.matrix(top.mat)))),
+  name = "Expression",
+  top_annotation = col_ha,
+  show_row_names = T,
+  show_column_names = FALSE,
+  cluster_columns = F,
+  cluster_rows = F,
+  col = jet.colors
+)
+```
+
+
+```{r Figure 2h left}
+# subset out CD44-hi Astrocyte for next step
+CD44 <- subset(RGL_Astrocyte, Subtype == "CD44-hi Astrocyte" & dev.group != "Fetal")
+
+DefaultAssay(CD44) <- "ATAC"
+CD44 <- SetIdent(CD44, value = "dev.group")
+
+# calculate DAP between different age groups in CD44-hi Astrocyte using DESeq2 for later motif analysis
+mat <- GetAssayData(CD44, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(CD44,assays="ATAC", return.seurat=F, group.by=c("sample_id","dev.group"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- CD44@meta.data[, c("dev.group","sample_id","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$dev.group, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$dev.group,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(CD44$dev.group,CD44$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$dev.group)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("dev.group",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(CD44$dev.group == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  res_list_ct[[cell]] <- res.df
+}
+# save the cell type DAP
+writexl::write_xlsx(res_list_ct, path = "/output/CD44_hi_Astrocyte_Age_DAP.xlsx")
+
+# read in the cell type DAP
+sheetnames <- readxl::excel_sheets(path ="/output/CD44_hi_Astrocyte_Age_DAP.xlsx")
+
+# split daps
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/CD44_hi_Astrocyte_Age_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# Clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+
+DefaultAssay(sub) <- "RNA"
+
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  
+  res <- tryCatch({
+    DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "dev.group"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+   DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+   enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in different age groups of C44-hi Astrocyte
+goi <- c("RFX4","RFX2","RFX3","NFIC","NR3C2","KLF15","NR3C1","REST","RFX7","RORB","FOS","JUNB","JUND","BACH2","JUN","JDP2","BACH1","BHLHE41","KLF15","HES1","ATF6","KLF15","ZNF320","VEZF1","TCF12","KLF7","SP1","MAX","ZNF148","HEY2") %>% unique
+
+sub <- CD44
+
+df<-read_xlsx(paste0("output/OPCvsAll_DAP_enrichedMotifs.xlsx"))#borrow the motif
+list<-df$motif[df$motif.name %in% goi]
+names(list) <- df$motif.name[df$motif.name %in% goi]
+
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$dev.group
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+library(dplyr)
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+avg_mat_scaled <- scale(avg_mat)
+
+# RNA average expression across dev.group
+DefaultAssay(sub) <- "RNA"
+
+rna_avg <- AverageExpression(
+  sub,
+  assays = "RNA",
+  features = goi[goi %in% rownames(sub[["RNA"]])],
+  group.by = "dev.group",
+  slot = "data"
+)$RNA
+
+# keep dev.group order
+rna_avg <- rna_avg[, names(devcolor)[names(devcolor) %in% colnames(rna_avg)], drop = FALSE]
+
+# motif is kept if:
+# expression is above its own average in at least one dev group
+# and expression is not all zero
+rna_keep <- rownames(rna_avg)[
+  rowSums(rna_avg > rowMeans(rna_avg, na.rm = TRUE)) > 0 &
+    rowSums(rna_avg > 1.5) > 0
+]
+
+# chromVAR activity filter
+# keep motifs whose chromVAR average is > 0 in at least one dev group
+chromvar_keep <- rownames(avg_mat)[
+  rowSums(avg_mat > 0.1, na.rm = TRUE) > 0
+]
+
+# combine both filters
+goi_keep <- intersect(rna_keep, chromvar_keep)
+
+goi_keep
+length(goi_keep)
+
+avg_mat_use <- avg_mat[
+  goi_keep,
+  names(devcolor)[names(devcolor) %in% colnames(avg_mat)],
+  drop = FALSE
+]
+
+min_score <- min(avg_mat_use, na.rm = TRUE)
+max_score <- max(avg_mat_use, na.rm = TRUE)
+
+chromvar_col <- colorRamp2(
+  c(min_score, 0, max_score),
+  c("blue", "white", "red")
+)  
+h <- Heatmap(
+  t(avg_mat_use),
+  name = "chromVAR activity",
+  col = chromvar_col,
+  show_row_names = TRUE,
+  cluster_rows = FALSE,
+  column_names_side = "top",
+  cluster_columns = TRUE,
+  show_column_dend = FALSE,
+  row_order = names(devcolor)[names(devcolor) %in% colnames(avg_mat_use)]
+)
+
+# draw heatmap first
+ht <- draw(h)
+
+# get motif order from clustered heatmap columns
+goi_order <- rownames(avg_mat_use)[column_order(ht)]
+
+# keep only genes present in RNA
+goi_order <- goi_order[goi_order %in% rownames(sub[["RNA"]])]
+
+# motifs RNA expression on ViolinPlot
+v <- VlnPlot(
+  sub,
+  features = goi_order,
+  group.by = "dev.group",
+  cols = devcolor,
+  pt.size = 0,
+  assay = "RNA",
+  stack = TRUE,
+  fill.by = "ident"
+) +
+  NoLegend() +
+  scale_y_discrete(limits = rev(c("Infant","Child", "Adolescent", "Adult")))
+
+p_combined <- v + wrap_elements(grid::grid.grabExpr(draw(h)))
+
+p_combined
+```
+
+```{r Figure 2h right}
+# subset out EAAT2-hi Astrocyte for next step
+EAAT2 <- subset(RGL_Astrocyte, Subtype == "EAAT2-hi Astrocyte" & dev.group != "Fetal")
+
+DefaultAssay(EAAT2) <- "ATAC"
+EAAT2 <- SetIdent(EAAT2, value = "dev.group")
+
+# calculate DAP between different age groups in EAAT2-hi Astrocyte using DESeq2 for later motif analysis
+mat <- GetAssayData(EAAT2, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(EAAT2,assays="ATAC", return.seurat=F, group.by=c("sample_id","dev.group"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- EAAT2@meta.data[, c("dev.group","sample_id","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$dev.group, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$dev.group,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(EAAT2$dev.group,EAAT2$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$dev.group)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("dev.group",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(EAAT2$dev.group == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  res_list_ct[[cell]] <- res.df
+}
+# save the cell type DAP
+writexl::write_xlsx(res_list_ct, path = "/output/EAAT2_hi_Astrocyte_Age_DAP.xlsx")
+
+# read in the cell type DAP
+sheetnames <- readxl::excel_sheets(path ="/output/EAAT2_hi_Astrocyte_Age_DAP.xlsx")
+
+# split daps
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/EAAT2_hi_Astrocyte_Age_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# Clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+
+DefaultAssay(sub) <- "RNA"
+
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  
+  res <- tryCatch({
+    DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "dev.group"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+   DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+   enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in different age groups of EAAT2-hi Astrocyte
+goi <- c("RFX4","RFX2","RFX3","NFIC","NR3C2","KLF15","NR3C1","REST","RFX7","RORB","FOS","JUNB","JUND","BACH2","JUN","JDP2","BACH1","BHLHE41","KLF15","HES1","ATF6","KLF15","ZNF320","VEZF1","TCF12","KLF7","SP1","MAX","ZNF148","HEY2") %>% unique
+
+sub <- EAAT2
+
+df<-read_xlsx(paste0("output/OPCvsAll_DAP_enrichedMotifs.xlsx"))#borrow the motif
+list<-df$motif[df$motif.name %in% goi]
+names(list) <- df$motif.name[df$motif.name %in% goi]
+
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$dev.group
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+avg_mat_scaled <- scale(avg_mat)
+
+# RNA average expression across dev.group
+DefaultAssay(sub) <- "RNA"
+
+rna_avg <- AverageExpression(
+  sub,
+  assays = "RNA",
+  features = goi[goi %in% rownames(sub[["RNA"]])],
+  group.by = "dev.group",
+  slot = "data"
+)$RNA
+
+# keep dev.group order
+rna_avg <- rna_avg[, names(devcolor)[names(devcolor) %in% colnames(rna_avg)], drop = FALSE]
+
+# motif is kept if:
+# expression is above its own average in at least one dev group
+# and expression is not all zero
+rna_keep <- rownames(rna_avg)[
+  rowSums(rna_avg > rowMeans(rna_avg, na.rm = TRUE)) > 0 &
+    rowSums(rna_avg > 1.5) > 0
+]
+
+# chromVAR activity filter
+# keep motifs whose chromVAR average is > 0 in at least one dev group
+chromvar_keep <- rownames(avg_mat)[
+  rowSums(avg_mat > 0.1, na.rm = TRUE) > 0
+]
+
+# combine both filters
+goi_keep <- intersect(rna_keep, chromvar_keep)
+
+goi_keep
+length(goi_keep)
+
+avg_mat_use <- avg_mat[
+  goi_keep,
+  names(devcolor)[names(devcolor) %in% colnames(avg_mat)],
+  drop = FALSE
+]
+
+min_score <- min(avg_mat_use, na.rm = TRUE)
+max_score <- max(avg_mat_use, na.rm = TRUE)
+
+chromvar_col <- colorRamp2(
+  c(min_score, 0, max_score),
+  c("blue", "white", "red")
+)  
+h <- Heatmap(
+  t(avg_mat_use),
+  name = "chromVAR activity",
+  col = chromvar_col,
+  show_row_names = TRUE,
+  cluster_rows = FALSE,
+  column_names_side = "top",
+  cluster_columns = TRUE,
+  show_column_dend = FALSE,
+  row_order = names(devcolor)[names(devcolor) %in% colnames(avg_mat_use)]
+)
+
+# draw heatmap first
+ht <- draw(h)
+
+# get motif order from clustered heatmap columns
+goi_order <- rownames(avg_mat_use)[column_order(ht)]
+
+# keep only genes present in RNA
+goi_order <- goi_order[goi_order %in% rownames(sub[["RNA"]])]
+
+# motifs RNA expression on ViolinPlot
+v <- VlnPlot(
+  sub,
+  features = goi_order,
+  group.by = "dev.group",
+  cols = devcolor,
+  pt.size = 0,
+  assay = "RNA",
+  stack = TRUE,
+  fill.by = "ident"
+) +
+  NoLegend() +
+  scale_y_discrete(limits = rev(c("Infant","Child", "Adolescent", "Adult")))
+
+p_combined <- v + wrap_elements(grid::grid.grabExpr(draw(h)))
+
+p_combined
+```
+
+```{r save RDS object}
+saveRDS(RGL_Astrocyte, "/output/objects/RGL_Astrocyte.RDS")
+```
+
+
+
+
+
+
+
+

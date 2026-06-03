@@ -1,0 +1,61 @@
+---
+title: "Extended Data Figure 6"
+author: "Gary Schweickart"
+date: "2026-06-01"
+output: html_document
+---
+
+```{r}
+load("results/CellChatExtDataFig6.Rdata")
+```
+
+
+```{r ext data fig 6}
+library(gridExtra)
+library(grid)
+library(magrittr)
+for (path in c("NOTCH","MPZ","CD6")) {
+  print(path)
+  bbplots <- lapply(dev.list, function(dev) {
+    try(
+    if (dev %in% net.df$age.group[net.df$pathway_name == path] %>% unique()){
+      gg <- plotBubble(mat = net.df, dev.group = dev, cell_types = c("OL", "OPC", "Early OL",
+                                                                    "Myeloid"), 
+           pathway = path, pairLR.use = NULL) + ggtitle(dev)
+      ggsave(plot=gg, paste0("results/bubblePlots/",path,"_",dev,".pdf"), height = 3.5, width = 4)
+      return(gg)
+    }
+    )
+    return(nullGrob())
+
+
+  })
+  
+  pdf(paste0("results/bubblePlots/",path,".pdf"),width = 35, height =5)
+  grid.arrange(bbplots[[1]],bbplots[[2]],bbplots[[3]], bbplots[[4]],nrow=1)
+  dev.off()
+}
+```
+
+```{r}
+library(gridExtra)
+library(grid)
+library(magrittr)
+for (path in c("NOTCH","MPZ","CD6")) {
+  print(path)
+  bbplots <- lapply(dev.list, function(dev) {
+    try(
+    if (dev %in% net.df$age.group[net.df$pathway_name == path] %>% unique()){
+      gg <- plotBubble(mat = net.df, dev.group = dev, cell_types = c("OL", "OPC", "Early OL",
+                                                                    "Myeloid"), 
+           pathway = path, pairLR.use = NULL, return.data = T) + ggtitle(dev)
+      return(gg@data)
+    }
+    )
+
+  })
+  
+    names(bbplots) <- dev.list
+    openxlsx::write.xlsx(bbplots,paste0("results/figshare/Extended Data Figure 6/",path,".xlsx"))
+}
+```
