@@ -27,7 +27,7 @@ For a user-friendly analysis tool, check out https://pediabrain.nchgenomics.org/
 * Download Pediatric and Adult files from GEO (Link)
 * Download Fetal pons data by following the instructions here: https://github.com/linnarsson-lab/fetal_brain_multiomics?tab=readme-ov-file 
 * Follow MultiomeWorkflow.Rmd and Cell_Type_Classification.Rmd, in the **code** folder.
-* Use created atlas for subsequent analysis files in the **analysis** folder in order. Run Figure\*.Rmd first, then Extended Data Figure\*.Rmd .
+* Use created atlas for subsequent analysis files in the **analysis** folder in order. Run Figure .Rmd files first, then Extended Data Figure .Rmd files .
 * To create SCIB and scCODA tables, follow the .py files in **code/scib_multiome_benchmark** and **code/scCODA.ipynb**, respectively.
 
 ## Mapping Files
