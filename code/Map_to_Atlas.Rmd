@@ -1,0 +1,185 @@
+---
+title: "Map Files to ATLAS"
+author: "Gary Schweickart"
+date: "2024-05-15"
+output: html_document
+---
+
+```{r load the library}
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(openxlsx) 
+library(harmony)
+library(clustree)
+library(knitr)
+set.seed(6)
+```
+
+```{r load seurat objects}
+dropseq <- readRDS("objects/jh_dropseq/objects/sobj.merged.qc.RDS")
+```
+
+```{r sct}
+# SCTransform
+options(future.globals.maxSize= 891289600)
+dropseq <- dropseq %>%
+   NormalizeData() %>%
+   FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   
+   ScaleData() %>%
+   SCTransform(vars.to.regress = NULL)
+
+# remove atac and macs2 assay 
+atlas <- readRDS("output/objects/atlas.RDS")
+atlas@assays$peaksMACS2 <- NULL
+atlas@assays$ATAC <- NULL
+```
+
+
+```{r}
+# prep dropseq data 
+dropseq <- PrepSCTFindMarkers(dropseq)
+```
+
+
+```{r}
+# find transfer anchors
+DefaultAssay(dropseq) <- "SCT"
+DefaultAssay(atlas) <- "SCT"
+atlas.anchors <- FindTransferAnchors(reference = atlas, query = dropseq, dims = 1:50
+                               , normalization.method = "SCT"
+                               , reference.reduction = "pca")
+
+atlas <- RunUMAP(atlas, reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_',return.model = TRUE)
+    
+dropseq <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = dropseq, refdata = atlas$Cell_Type, reference.reduction = "pca", reduction.model = "umap.rna")
+dropseq$Cell_Type <- dropseq$predicted.id
+dropseq$Cell_Type.score <- dropseq$predicted.id.score
+dropseq <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = dropseq, refdata = atlas$Subtype, reference.reduction = "pca", reduction.model = "umap.rna")
+dropseq$Subtype <- dropseq$predicted.id
+dropseq$Subtype.score <- dropseq$predicted.id.score
+dropseq <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = dropseq, refdata = atlas$dev.group, reference.reduction = "pca", reduction.model = "umap.rna")
+dropseq$dev.group <- dropseq$predicted.id
+dropseq$dev.group.score <- dropseq$predicted.id.score
+saveRDS(dropseq, "output/objects/mapping/dropseq_map_to_ATLAS.rds")
+
+```
+
+## MS
+```{r load seurat objects}
+ms <- readRDS("objects/MS/objects/ms.rds")
+```
+
+```{r sct}
+# SCTransform
+options(future.globals.maxSize= 2508544921)
+ms <- ms %>%
+   NormalizeData() %>%
+   FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+   ScaleData() %>%
+   SCTransform(vars.to.regress = NULL)
+```
+
+
+```{r}
+ms <- PrepSCTFindMarkers(ms)
+```
+
+
+```{r}
+DefaultAssay(ms) <- "SCT"
+DefaultAssay(atlas) <- "SCT"
+atlas.anchors <- FindTransferAnchors(reference = atlas, query = ms, dims = 1:50
+                               , normalization.method = "SCT"
+                               , reference.reduction = "pca")
+
+saveRDS(atlas.anchors, "output/objects/mapping/ms.anchors.rds")
+```
+
+
+```{r}
+atlas <- RunUMAP(atlas, reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_',return.model = TRUE)
+
+ms <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = ms, refdata = atlas$Cell_Type, reference.reduction = "pca", reduction.model = "umap.rna")
+ms$Cell_Type <- ms$predicted.id
+ms$Cell_Type.score <- ms$predicted.id.score
+
+
+ms <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = ms, refdata = atlas$Subtype, reference.reduction = "pca", reduction.model = "umap.rna")
+
+ms$Subtype <- ms$predicted.id
+ms$Subtype.score <- ms$predicted.id.score
+
+
+ms <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = ms, refdata = atlas$dev.group, reference.reduction = "pca", reduction.model = "umap.rna")
+ms$dev.group <- ms$predicted.id
+ms$dev.group.score <- ms$predicted.id.score
+
+saveRDS(ms, "output/objects/mapping/ms_map_to_ATLAS.rds")
+```
+
+
+# DMGs
+
+```{r load seurat objects}
+cancer <- readRDS("/igm/projects/HD-BAT_Wedemeyer/objects/cancer/cancer.rds")
+```
+
+```{r sct}
+
+cancer@meta.data$DX[cancer@meta.data$sample_id == "JL12_T"] <- "DMG"
+
+cancer@meta.data$Subgroup[cancer@meta.data$sample_id == "JL12_T"] <- "DMG"
+
+
+cancer@meta.data$sample_name[cancer@meta.data$sample_id == "JL12_T"] <- "JL12_T"
+
+cancer <- subset(cancer, Subgroup != "Normal")
+
+cancer$Subgroup <- factor(cancer$Subgroup, levels = c("DMG", "G34-GBM", "e-GBM", "GBM", "pHGG", "RIG"))
+
+cancer$sample_id <- cancer$sample_name
+
+cancer <- subset(cancer, Subgroup == "DMG")
+
+# SCTransform
+cancer <- cancer %>%
+   NormalizeData() %>%
+   FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   
+   ScaleData() %>%
+   SCTransform(vars.to.regress = NULL)
+
+```
+
+
+```{r prep sct}
+# Prep SCT assay to find markers
+cancer <- PrepSCTFindMarkers(cancer)
+```
+
+```{r find transfer anchors}
+# Find transfer anchors
+DefaultAssay(cancer) <- "SCT"
+DefaultAssay(atlas) <- "SCT"
+atlas.anchors <- FindTransferAnchors(reference = atlas, query = cancer, dims = 1:50
+                               , normalization.method = "SCT"
+                               , reference.reduction = "pca")
+```
+
+```{r map cancer to atlas}
+# return umap model
+atlas <- RunUMAP(atlas, reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_',return.model = TRUE)
+# map cancer to atlas
+cancer <- MapQuery(anchorset = atlas.anchors, reference = atlas, query = cancer, refdata = atlas$Cell_Type, reference.reduction = "pca", reduction.model = "umap.rna")
+cancer$Cell_Type <- cancer$predicted.id
+
+saveRDS(cancer, "objects/mapping/dmg_map_to_ATLAS.rds")
+```
+
+
+

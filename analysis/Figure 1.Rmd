@@ -1,0 +1,500 @@
+---
+title: "Figure 1"
+author: "Sheldon Ding & Gary Schweickart"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+library(ggplot2)
+library(tidyverse)
+library(broom)
+library(ggfortify)
+library(car)
+library(ggpmisc)
+library(dplyr)
+
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+###Figure 1
+
+Figure 1a-d were made using BioRender and Illustrator 
+```{r Figure 1e}
+# load imagej data
+df <-read.csv("data/fmimagej.csv")
+
+lm.init<- lm(data=df, Age..in.years. ~ Mean.Area)
+
+autoplot(lm.init)
+
+lm.log<- lm(Mean.Area ~ log(Age..in.years.), data = df)
+autoplot(lm.log)
+
+
+# Create prediction 
+age_seq <- seq(min(df$Age..in.years.), max(df$Age..in.years.), length.out = 300)
+
+# Predict fitted Mean.Area values
+pred <- predict(lm.log, newdata = data.frame(Age..in.years. = age_seq))
+
+summary(lm.log) 
+df.1 <- df
+
+
+lm_eqn <- function(df){
+  m <- lm(y ~ x, df);
+  eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+                   list(a = format(unname(coef(m)[1]), digits = 2),
+                        b = format(unname(coef(m)[2]), digits = 2),
+                        r2 = format(summary(m)$r.squared, digits = 3)))
+  as.character(as.expression(eq));
+}
+
+
+colnames(df.1)[1:3]<-c("Age", "Mean_Area","ID") 
+ggplot(data=df.1, aes(x=Age,y=Mean_Area)) + 
+  geom_point() +  
+  geom_smooth(method = "lm", color = "blue", fill = "lightblue", se = TRUE, formula = y ~ log(x)) +  
+  stat_poly_eq(
+    aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+    formula = y ~ log(x),
+    parse = TRUE,
+    label.x = 1,          
+    label.y = 0.3
+  )+
+  theme_light() + xlab("Age (years)") + ylab("Mean FM area") + ggtitle("Mean FM area across age")
+
+```
+
+
+```{r Figure 1f}
+# See code/Cell_Type_Classification to see how we determined cell types
+
+# assign colors to Cell_Type
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Fetal Neuronal Progenitor" = "#808000", "Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f", "Postnatal Glial Progenitor" = "#D2691E", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+ 
+
+# plot Cell_Type on umap.rna
+DimPlot(sobj, reduction = "umap.rna", cols = cellcolor)
+
+# plot Cell_Type on umap.atac
+DimPlot(sobj, reduction = "umap.atac", cols = cellcolor)
+
+# plot Cell_Type on wnn.umap
+DimPlot(sobj, reduction = "wnn.umap", cols = cellcolor)
+```
+
+```{r Figure 1g}
+# to plot Cell_Type on wnn.umap by fetal and postnatal
+DimPlot(sobj, reduction = "wnn.umap", cols = cellcolor, split.by = "postnatal")
+```
+
+```{r Figure 1h}
+# extract metadata of Cell_Type and dev.group for ggplot visualization
+sobj$age[sobj$orig.ident == "pediatric_multiome"] <- sobj$Age_years[sobj$orig.ident == "pediatric_multiome"]
+
+sobj$age <- factor(sobj$age, levels = c("7.6 PCW","9.5 PCW","12 PCW", "13 PCW","0","2","4","5","7","8","13","14","31","32","33"))
+
+prop_df <- sobj@meta.data %>%
+  dplyr::count(sample_id, Cell_Type) %>%
+  dplyr::group_by(sample_id) %>%
+  dplyr::mutate(proportion = n / sum(n)) %>%
+  ungroup()
+
+prop_df$age <- ""
+prop_df$dev.group <- ""
+
+for (i in 1:dim(prop_df)[1]) {
+  prop_df$age[i] <- sobj$age[sobj$sample_id==prop_df$sample_id[i]][[1]] %>% as.character()
+  prop_df$dev.group[i] <- sobj$dev.group[sobj$sample_id==prop_df$sample_id[i]][[1]] %>% as.character()
+  
+}
+
+prop_df$age <- factor(prop_df$age, levels = c("7.6 PCW","9.5 PCW","12 PCW", "13 PCW","0","2","4","5","7","8","13","14","31","32","33"))
+
+prop_df$sample_id<-factor(prop_df$sample_id,levels=(prop_df$sample_id[order(prop_df$age)] %>% unique()))
+
+
+
+ggplot(prop_df, aes(x = sample_id, y = proportion, fill = Cell_Type)) +
+  geom_col(width = 0.8) +
+  scale_y_continuous(
+    labels = scales::percent,
+    expand = c(0, 0)
+  ) +
+  labs(
+    x = "Sample",
+    y = "Cell proportion",
+    fill = "Cell Type"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) + 
+  scale_fill_manual(values =cellcolor) + NoLegend()
+```
+
+```{r Figure 1i}
+# calculate differentially accessible peaks (DAP) between different Cell_Type using DESeq2 for later motif analysis
+DefaultAssay(sobj) <- "ATAC"
+sobj <- SetIdent(sobj, value = "Cell_Type")
+
+mat <- GetAssayData(sobj, assay = "ATAC", layer = "data")
+
+agg<-AggregateExpression(sobj,assays="ATAC", return.seurat=F, group.by=c("sample_id","Cell_Type"))
+pb <- agg$ATAC +1
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- sobj@meta.data[, c("Cell_Type","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$Cell_Type, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$Cell_Type,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(sobj$Cell_Type,sobj$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_") %>% gsub("-","_",.)
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))])
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+all(rownames(meta_unique) == colnames(pb))
+
+DAP <- unique(meta_unique$Cell_Type)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+
+ct_meta$Cell_Type <- factor(ct_meta$Cell_Type,
+                                  levels = names(cellcolor))
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ Cell_Type + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- vst(dds)
+
+celltype_res_list_ct_DAP <- list()
+for(cell in gsub(" ",".",gsub("\\+",".",DAP))){
+  res <- results(dds, name=paste0("Cell_Type",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-subset(res.df, log2FoldChange > 0)
+  res.df<-res.df[order(res.df$padj, decreasing = F),]
+  genes_use <- res.df$gene[res.df$padj < 0.05 & res.df$log2FoldChange > 1.5 & !is.na(res.df$padj)]
+  
+  if (length(genes_use) > 0) {
+    
+    mat_sub <- mat[genes_use, , drop = FALSE]
+    cells <- which(sobj$Cell_Type == cell)
+    
+    pct <- Matrix::rowSums(mat_sub[, cells, drop = FALSE] > 0) / length(cells)
+    res.df$pct.1 <- NA
+    res.df[genes_use,]$pct.1 <- pct
+    
+  }
+  celltype_res_list_ct_DAP[[cell]] <- res.df
+}
+# save the cell type DAP
+write.xlsx("/output/celltype_res_list_ct_DAP.xlsx")
+
+# add motif pwm to sobj
+sq24 <- RSQLite::dbConnect(RSQLite::SQLite(), db(jaspar))
+motifs24 <- TFBSTools::getMatrixSet(sq24, list(species = "Homo sapiens", collection = "CORE"))
+sub <- AddMotifs(sobj, genome = BSgenome.Hsapiens.UCSC.hg38, pfm = motifs24)
+
+# read in the cell type DAP
+sheetnames <- readxl::excel_sheets(path ="/output/celltype_res_list_ct_DAP.xlsx")
+
+# split DAPs
+dap.list <- lapply(sheetnames, function (x) {
+  read_xlsx("/output/celltype_res_list_ct_DAP.xlsx",sheet=x) %>% return()
+})
+names(dap.list) <- sheetnames
+
+# run the rGreat analysis for unique peaks
+dap.list <- lapply(dap.list, function(x) { x <- x %>%
+  separate(gene, into = c("seqnames", "start", "end"), sep = "-")
+x$start <- as.numeric(x$start)
+x$end <- as.numeric(x$end)
+x$strand <- c("*")
+return(x)})
+
+# clean motif names and split TFs
+motif_names <- sapply(motifs24, function(x) x@name)
+
+motifs.df <- data.frame(
+  motif.name = motif_names,
+  stringsAsFactors = FALSE
+)
+
+motifs.long <- motifs.df %>%
+  dplyr::mutate(
+    motif_clean = stringr::str_remove(motif.name, "\\(.*\\)"),
+    motif_clean = stringr::str_replace_all(motif_clean, "/", "::"),
+    motif_clean = stringr::str_replace_all(motif_clean, "\\.[0-9]+$", "")
+  ) %>%
+  tidyr::separate_rows(motif_clean, sep = "::") %>%
+  dplyr::rename(TF = motif_clean) %>%
+  dplyr::distinct(motif.name, TF)
+DefaultAssay(sub) <- "RNA"
+motifs.long <- motifs.long %>%
+  dplyr::filter(TF %in% rownames(sub[["RNA"]]@counts))
+length(unique(motifs.long$TF))
+head(motifs.long)
+
+# run FindMotifs with TF expression filtering
+out_dir <- "/output/"
+
+motif_list <- lapply(unique(sheetnames), function(dev) {
+  message(dev)
+  
+  dap <- dap.list[[dev]]
+  
+  top.da.peak <- dap %>%
+    dplyr::filter(
+      !is.na(padj),
+      padj < 0.01,
+      log2FoldChange > 1.5
+    ) %>%
+    dplyr::arrange(padj) %>%
+    dplyr::slice_head(n = 5000)
+  
+  message("Peaks used: ", nrow(top.da.peak))
+  
+  if (nrow(top.da.peak) < 50) {
+    warning(paste("Skipping", dev, "- too few peaks"))
+    return(NULL)
+  }
+  res <- tryCatch({
+ DefaultAssay(sub) <- "RNA"
+    
+    pct.expressed <- scCustomize::Percent_Expressing(
+      sub,
+      features = unique(motifs.long$TF),
+      assay = "RNA",
+      group.by = "Cell_Type"
+    )
+    
+    pct.expressed$TF <- rownames(pct.expressed)
+    
+    col_use <- gsub(" ", ".", dev)
+    
+    if (!col_use %in% colnames(pct.expressed)) {
+      warning(paste("Column not found in Percent_Expressing output:", col_use))
+      return(NULL)
+    }
+    
+    motif_expr <- motifs.long %>%
+      dplyr::left_join(pct.expressed, by = "TF")
+    
+    expressed_motifs <- motif_expr %>%
+      dplyr::group_by(motif.name) %>%
+      dplyr::summarise(
+        max_pct_expressed = max(.data[[col_use]], na.rm = TRUE),
+        expressed_TFs = paste(TF[.data[[col_use]] > 10], collapse = ","),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(max_pct_expressed > 10)
+    
+    message("Expressed motifs: ", nrow(expressed_motifs))
+    
+    if (nrow(expressed_motifs) < 10) {
+      warning(paste("Skipping", dev, "- too few expressed motifs"))
+      return(NULL)
+    }
+    DefaultAssay(sub) <- "ATAC"
+    
+    enriched.motifs <- FindMotifs(
+      object = sub,
+      features = paste(
+        top.da.peak$seqnames,
+        top.da.peak$start,
+        top.da.peak$end,
+        sep = "-"
+      )
+    )
+    
+    enriched.motifs <- enriched.motifs %>%
+      dplyr::filter(motif.name %in% expressed_motifs$motif.name) %>%
+      dplyr::left_join(expressed_motifs, by = "motif.name")
+    
+    # Optional: recalculate adjusted p-value only among expressed motifs
+    enriched.motifs$p.adjust.expressed_only <- p.adjust(
+      enriched.motifs$pvalue,
+      method = "BH"
+    )
+    
+    enriched.motifs$sig <- ifelse(
+      is.finite(enriched.motifs$p.adjust.expressed_only) &
+        enriched.motifs$p.adjust.expressed_only < 0.05 &
+        enriched.motifs$fold.enrichment > 1 &
+        enriched.motifs$max_pct_expressed > 10,
+      TRUE,
+      FALSE
+    )
+    
+    enriched.motifs$comparison <- dev
+    
+    openxlsx::write.xlsx(
+      enriched.motifs,
+      file = file.path(
+        out_dir,
+        paste0(dev, "_vsALL_DAP_enrichedMotifs_expressedOnly.xlsx")
+      ),
+      rowNames = TRUE
+    )
+    
+    return(enriched.motifs)
+    
+  }, error = function(e) {
+    warning(paste("Error in", dev, ":", e$message))
+    return(NULL)
+  })
+  
+  return(res)
+})
+
+# top unique motifs in cell types with more than 1,000 cells
+goi <- c("SOX4","SOX2",
+         "POU3F3","UNCX","EBF3",
+         "NEUROD1","HOXB4","ASCL1",
+         "SOX8","SOX10","FOXC2","IKZF1") %>% unique
+
+# plot the rna expression of motifs on DotPlot
+cell_counts <- table(sub$Cell_Type)
+keep_cells <- names(cell_counts[cell_counts >= 1000])
+
+Idents(sub) <- "Cell_Type"
+
+VlnPlot(
+  sub,
+  features = goi,
+  idents = keep_cells, stack = T
+) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#plot the peaks of motifs on CoveragePlot
+DefaultAssay(sub) <- "ATAC"
+sub <- RegionStats(sub, genome = BSgenome.Hsapiens.UCSC.hg38)
+for (x in goi) {
+  message("Plotting: ", x)
+  
+  p <- tryCatch({
+    CoveragePlot(
+      object = sub,
+      region = x,
+      features = x,idents = keep_cells, annotation = F,peaks = F,assay="ATAC") & scale_fill_manual(values = cellcolor) & theme(
+        panel.background = element_rect(fill = "gray"))
+    
+  }, error = function(e) {
+    warning(paste("Skipping", x, "-", e$message))
+    return(NULL)
+  })
+}
+
+# plot the chromVAR activity of motifs on heatmap
+
+sobj <- RunChromVAR(
+  object = sobj,
+  genome = BSgenome.Hsapiens.UCSC.hg38
+)
+
+over1k<-table(sobj$Cell_Type)[table(sobj$Cell_Type) > 1000] %>% names()
+cells.trunc<-rownames(sobj@meta.data[sobj$Cell_Type %in% over1k,])
+sub <- subset(sobj, cells = cells.trunc)
+motif_ids <- rownames(sobj[["chromvar"]])
+motif_names <- ConvertMotifID(
+  object = sobj[["ATAC"]],
+  id = motif_ids
+)
+list<-motif_ids[motif_names %in% goi]
+names(list) <- motif_names[motif_names %in% goi]
+                             
+DefaultAssay(sub) <- "chromvar"
+chromvar_mat <- GetAssayData(sub, assay = "chromvar", layer = "data")
+chromvar_mat <- chromvar_mat[list, , drop = FALSE]
+celltypes<-sub$Cell_Type
+df <- as.data.frame(t(chromvar_mat))
+df$celltype <- celltypes
+
+avg_df <- df %>%
+  group_by(celltype) %>%
+  summarise(across(all_of(list), mean))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- t(as.matrix(avg_mat))
+
+avg_mat <- as.data.frame(avg_df)
+rownames(avg_mat) <- avg_mat$celltype
+avg_mat$celltype <- NULL
+
+avg_mat <- as.matrix(avg_mat) %>% t
+
+Heatmap(t(avg_mat[goi,]),
+        name = "chromVAR activity",
+        show_row_names = T,
+        cluster_rows = F,
+        cluster_columns = F,row_order = names(cellcolor)[names(cellcolor) %in% over1k])
+```
+
+
+
+
+
+
+
+
+
+
+
+

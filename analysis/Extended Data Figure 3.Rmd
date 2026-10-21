@@ -1,0 +1,899 @@
+---
+title: "Extended Data Figure 3"
+author: "Gary Schweickart"
+date: "2026-05-06"
+output: html_document
+---
+
+```{r load libraries}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load object}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+```{r Ext 3a}
+# plot Cell_Type on umap.rna
+DimPlot(sobj, reduction = "umap.rna", cols = cellcolor)
+
+# plot Cell_Type on umap.atac
+DimPlot(sobj, reduction = "umap.atac", cols = cellcolor)
+
+# plot Cell_Type on wnn.umap
+DimPlot(sobj, reduction = "wnn.umap", cols = cellcolor)
+```
+
+# Map to adult ref
+
+```{r}
+adult_counts_path <-
+  "data/ref_rna_mapping/adult_ref_matrix.mtx"
+
+adult_cells_path <-
+  "data/ref_rna_mapping/adult_ref_cells.csv"
+
+adult_features_path <-
+  "data/ref_rna_mapping/adult_ref_features.csv"
+
+adult_metadata_path <-
+  "data/ref_rna_mapping/adult_ref_metadata.csv"
+
+
+output_dir <- "output/objects"
+
+# Number of PCs used for mapping
+n_pcs <- 50
+
+adult_counts <- ReadMtx(
+  mtx = adult_counts_path,
+  cells = adult_cells_path,
+  features = adult_features_path,
+  feature.column = 1
+)
+
+
+
+adult_metadata <- read.csv(
+  adult_metadata_path,
+  row.names = 1,
+  check.names = FALSE
+)
+
+common_cells <- intersect(
+  colnames(adult_counts),
+  rownames(adult_metadata)
+)
+
+
+
+adult_counts <- adult_counts[, common_cells]
+
+adult_metadata <- adult_metadata[
+  common_cells,
+  ,
+  drop = FALSE
+]
+
+
+adult <- CreateSeuratObject(
+  counts = adult_counts,
+  meta.data = adult_metadata
+)
+
+rm(adult_counts, adult_metadata)
+
+gc()
+
+saveRDS(adult,"output/objects/adult_ref.RDS") # save for future use
+
+adult <- SCTransform(
+  adult,
+  assay = "RNA",
+  verbose = TRUE
+)
+
+
+adult <- RunPCA(
+  adult,
+  assay = "SCT",
+  npcs = n_pcs,
+  verbose = FALSE
+)
+
+
+adult <- RunUMAP(
+  adult,
+  reduction = "pca",
+  dims = 1:n_pcs,
+  return.model = TRUE,
+  verbose = FALSE
+)
+
+
+transfer_features <- intersect(
+  rownames(adult[["SCT"]]),
+  rownames(atlas[["SCT"]])
+)
+
+adult_anchors <- FindTransferAnchors(
+  reference = adult,
+  query = atlas,
+  normalization.method = "SCT",
+  reference.reduction = "pca",
+  features = transfer_features,
+  dims = 1:n_pcs,
+  verbose = TRUE
+)
+
+atlas_adult <- MapQuery(
+  anchorset = adult_anchors,
+  reference = adult,
+  query = atlas,
+  refdata = list(
+    celltype = "cell_type"
+  ),
+  reference.reduction = "pca",
+  reduction.model = "umap",
+  verbose = TRUE
+)
+
+
+atlas_combined <- atlas
+
+saveRDS(
+  atlas_adult,
+  file = file.path(
+    output_dir,
+    "atlas_mapped_adult_SCT.RDS"
+  )
+)
+```
+
+# Map to fetal ref
+
+```{r}
+
+fetal_counts_path <-
+  "data/ref_rna_mapping/fetal_ref_matrix.mtx"
+
+fetal_cells_path <-
+  "data/ref_rna_mapping/fetal_ref_cells.csv"
+
+fetal_features_path <-
+  "data/ref_rna_mapping/fetal_ref_features.csv"
+
+fetal_metadata_path <-
+  "data/ref_rna_mapping/fetal_ref_metadata.csv"
+
+output_dir <- "output/objects"
+
+n_pcs <- 50
+
+
+atlas <- readRDS(atlas_path)
+
+
+if ("peaksMACS2" %in% names(atlas@assays)) {
+  
+  message("Removing peaksMACS2 assay...")
+  
+  atlas[["peaksMACS2"]] <- NULL
+}
+
+
+
+fetal_counts <- ReadMtx(
+  mtx = fetal_counts_path,
+  cells = fetal_cells_path,
+  features = fetal_features_path,
+  feature.column = 1
+)
+
+
+fetal_metadata <- read.csv(
+  fetal_metadata_path,
+  row.names = 1,
+  check.names = FALSE
+)
+
+
+
+common_cells <- intersect(
+  colnames(fetal_counts),
+  rownames(fetal_metadata)
+)
+
+
+fetal_counts <- fetal_counts[, common_cells]
+
+fetal_metadata <- fetal_metadata[
+  common_cells,
+  ,
+  drop = FALSE
+]
+
+
+
+
+fetal <- CreateSeuratObject(
+  counts = fetal_counts,
+  meta.data = fetal_metadata
+)
+
+rm(fetal_counts, fetal_metadata)
+
+saveRDS(fetal,"output/objects/fetal_ref.RDS") # save for future use
+
+gc()
+
+
+set.seed(1234)
+
+downsample_fraction <- 0.30
+
+original_n_cells <- ncol(fetal)
+
+
+cells_by_type <- split(
+  Cells(fetal),
+  fetal$cell_type
+)
+
+
+downsampled_cells <- unlist(
+  lapply(
+    cells_by_type,
+    function(cells) {
+      
+      n_keep <- max(
+        1,
+        round(
+          length(cells) *
+            downsample_fraction
+        )
+      )
+      
+      sample(
+        cells,
+        size = n_keep,
+        replace = FALSE
+      )
+    }
+  ),
+  use.names = FALSE
+)
+
+
+
+
+fetal <- subset(
+  fetal,
+  cells = downsampled_cells
+)
+
+
+message(
+  "Percent retained: ",
+  round(
+    100 * ncol(fetal) / original_n_cells,
+    1
+  ),
+  "%"
+)
+
+
+
+
+
+fetal <- SCTransform(
+  fetal,
+  assay = "RNA",
+  vst.flavor = "v2",
+  verbose = TRUE
+)
+
+
+fetal <- RunPCA(
+  fetal,
+  assay = "SCT",
+  npcs = n_pcs,
+  verbose = FALSE
+)
+
+
+fetal <- RunUMAP(
+  fetal,
+  reduction = "pca",
+  dims = 1:n_pcs,
+  return.model = TRUE,
+  verbose = FALSE
+)
+
+
+transfer_features <- intersect(
+  rownames(fetal[["SCT"]]),
+  rownames(atlas[["SCT"]])
+)
+
+fetal_anchors <- FindTransferAnchors(
+  reference = fetal,
+  query = atlas,
+  normalization.method = "SCT",
+  reference.reduction = "pca",
+  features = transfer_features,
+  dims = 1:n_pcs,
+  verbose = TRUE
+)
+
+
+
+atlas_fetal <- MapQuery(
+  anchorset = fetal_anchors,
+  reference = fetal,
+  query = atlas,
+  refdata = list(
+    celltype = "CellClass"
+  ),
+  reference.reduction = "pca",
+  reduction.model = "umap",
+  verbose = TRUE
+)
+
+saveRDS(
+  atlas_fetal,
+  file = file.path(
+    output_dir,
+    "atlas_mapped_fetal_SCT_CellClass.RDS"
+  )
+)
+```
+
+
+```{r}
+atlas_adult_meta<-atlas_adult@meta.data
+# check labels
+atlas_adult_meta$predicted.celltype %>% unique # good
+
+# set colors
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Fetal Neuronal Progenitor" = "#808000", "Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f", "Postnatal Glial Progenitor" = "#D2691E", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+
+
+#to assgin color to each age group
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+
+# dev group 
+Development = c("#0D0887", "#7E03A8", "#CC4678", "#F89441", "#F0F921")
+names(Development) = c("adult", "Infant", "Child",
+                       "Adolescent","Adult")
+postnatal= c("Postnatal" = "#F0F921", "Fetal" =  "#0D0887")
+
+adult_ref_colors <- c(
+  # Astrocyte
+  "astrocyte" = "orange",
+  
+  # Neuronal
+  "neuron" = "#0B6623",
+  "cerebellar granule cell" = "#0B6635",
+  "caudal ganglionic eminence derived interneuron" = "#0B6640",
+  "cerebellar inhibitory GABAergic interneuron" = "#0B6650",
+  "Lamp5 Lhx6 neuron" = "#0B6660",
+  "midbrain-derived inhibitory neuron" = "#0B6670",
+  
+  # Oligodendrocyte lineage
+  "oligodendrocyte precursor cell" = "#42A5F5",
+  "committed oligodendrocyte precursor" = "#42A5A0",
+  "oligodendrocyte" = "#37294f",
+  
+  # Vascular
+  "endothelial cell" = "#C2A57B",
+  "pericyte" = "#6E260E",
+  "vascular associated smooth muscle cell" = "#6E260E",
+  
+  # Mesenchymal
+  "fibroblast" = "#b732cc",
+  
+  # Immune
+  "T cell" = "#FF9AA2",
+  "natural killer cell" = "#FF9AA2",
+  "monocyte" = "#FF1493",
+  "microglial cell" = "#FF1493",
+  "central nervous system macrophage" = "#FF1493"
+)
+
+```
+
+```{r}
+atlas_fetal_meta<-atlas_fetal@meta.data 
+# check labels
+atlas_fetal_meta$predicted.celltype %>% unique # good
+
+# set colors
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Fetal Neuronal Progenitor" = "#808000", "Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f", "Postnatal Glial Progenitor" = "#D2691E", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+
+
+#to assgin color to each age group
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+subtypecolor <- c("Ependymal" = "#000000","Fetal Ependymal" = "#36454F", "ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", 
+                  "Transit Amplifying Cell" = "#DFFF00", "PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", 
+                  "Glut Neuron" = "#228c68", "Neuron" = "#006400","SEMA3E Astrocyte" = "#FFDAB9","ROBO2 Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162",
+                  "Undetermined Astrocyte" = "#BDC3C7","Fetal COP" = "#00FFFF","RG-like OPC" =  "#89CFF0","OPC" = "#0096FF","COP" = "#A7C7E7",
+                  "Astrocyte-like OPC"= "#40E0D0", "Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB",
+                  "Mesenchymal" = "#b732cc", "Fetal Microglia" = "#FFB3BA", "Microglia" = "#FF6F61", "Lymphocyte" = "darkred",
+                  "Lymphatic Endothelial" = "#D5006D", "Immune OL" = "#D8BFD8", "Endothelial" = "#000080",
+                  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+# dev group 
+Development = c("#0D0887", "#7E03A8", "#CC4678", "#F89441", "#F0F921")
+names(Development) = c("Fetal", "Infant", "Child",
+                       "Adolescent","Adult")
+postnatal= c("Postnatal" = "#F0F921", "Fetal" =  "#0D0887")
+
+fetal_ref_colors <- c("Neuron" = "#5b80c0", 
+                      "Neuroblast" = "#5c469b",
+                      "Neuronal IPC" = "#964d9d",
+                      "Radial glia" = "#24b25c",
+                      "Glioblast" = "#437d69",
+                      "Oligo" = "#9bba3a",
+                      "Fibroblast" = "#c28150",
+                      "Neural crest" = "#eec79f",
+                      "Placodes" = "#705220",
+                      "Immune" = "#e6c21f",
+                      "Vascular" = "#e03025",
+                      "Erythrocyte" = "#f0607f") # from Braun, et al.
+
+
+```
+
+```{r Ext 3b}
+atlas_adult$predicted.celltype <- factor(atlas_adult$predicted.celltype, levels = names(adult_ref_colors))
+mapped_rna<-DimPlot(atlas_adult, reduction = "umap.rna", group.by = "predicted.celltype", cols = adult_ref_colors)
+mapped_atac <- DimPlot(atlas_adult, reduction="umap.atac", group.by = "predicted.celltype", cols = adult_ref_colors)
+mapped_wnn <- DimPlot(atlas_adult, reduction="wnn.umap", group.by = "predicted.celltype", cols = adult_ref_colors)
+mapped_rna
+mapped_atac
+mapped_wnn
+```
+
+``` {r Ext 3c}
+atlas_fetal$predicted.celltype <- factor(atlas_fetal$predicted.celltype, levels = names(fetal_ref_colors))
+mapped_rna<-DimPlot(atlas_fetal, reduction = "umap.rna", group.by = "predicted.celltype", cols = fetal_ref_colors)
+mapped_atac <- DimPlot(atlas_fetal, reduction="umap.atac", group.by = "predicted.celltype", cols = fetal_ref_colors)
+mapped_wnn <- DimPlot(atlas_fetal, reduction="wnn.umap", group.by = "predicted.celltype", cols = fetal_ref_colors)
+mapped_rna
+mapped_atac
+mapped_wnn
+```
+
+```{r Ext 3d}
+# Count cells by assigned Cell_Type and collapsed adult group
+# get number of cells that mapped properly
+atlas_adult_meta$Cell_Type <- as.character(atlas_adult_meta$Cell_Type)
+atlas_adult_meta$sample_id <- as.character(atlas_adult_meta$sample_id)
+atlas_adult_meta$predicted.celltype <- as.character(atlas_adult_meta$predicted.celltype)
+
+
+count_df <- atlas_adult_meta %>%
+  dplyr::group_by(Cell_Type, predicted.celltype) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+count_df$Cell_Type <- factor(count_df$Cell_Type, levels = rev(names(cellcolor)))
+count_df$predicted.celltype <- factor(count_df$predicted.celltype, levels = names(adult_ref_colors))
+p<-ggplot(
+  count_df,
+  aes(
+    x = Cell_Type,
+    y = n,
+    fill = predicted.celltype
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = adult_ref_colors) +
+  labs(
+    x = "Assigned Cell Type",
+    y = "Number of cells",
+    fill = "adult ref annotation"
+  ) +
+  theme_bw()
+p
+
+# just postnatal now
+count_df_postnatal <- atlas_adult_meta %>%
+  subset(postnatal == "Postnatal") %>%
+  dplyr::group_by(Cell_Type, predicted.celltype) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+count_df_postnatal$Cell_Type <- factor(count_df_postnatal$Cell_Type, levels = rev(names(cellcolor)))
+count_df_postnatal$predicted.celltype <- factor(count_df_postnatal$predicted.celltype, levels = names(adult_ref_colors))
+
+
+missing<-names(cellcolor)[!(names(cellcolor) %in% count_df_postnatal$Cell_Type)]  
+count_df_postnatal <- data.frame(count_df_postnatal)
+count_df_postnatal <- rbind(count_df_postnatal, 
+                        data.frame(Cell_Type = missing, 
+                                   predicted.celltype = "monocyte", #picking 0 value here because there are no cells and won't mess up the factor levels
+                                   n = 0)) 
+
+      
+      
+p_postnatal<-ggplot(
+  count_df_postnatal,
+  aes(
+    x = Cell_Type,
+    y = n,
+    fill = predicted.celltype
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = adult_ref_colors) +
+  labs(
+    x = "Assigned Cell Type",
+    y = "Number of cells",
+    fill = "adult ref annotation"
+  ) +
+  theme_bw()
+p_postnatal
+
+
+# just Fetal now
+count_df_Fetal <- atlas_adult_meta %>%
+  subset(postnatal == "Fetal") %>%
+  dplyr::group_by(Cell_Type, predicted.celltype) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+count_df_Fetal$Cell_Type <- factor(count_df_Fetal$Cell_Type, levels = rev(names(cellcolor)))
+count_df_Fetal$predicted.celltype <- factor(count_df_Fetal$predicted.celltype, levels = names(adult_ref_colors))
+missing<-names(cellcolor)[!(names(cellcolor) %in% count_df_Fetal$Cell_Type)]  
+count_df_Fetal <- data.frame(count_df_Fetal)
+count_df_Fetal <- rbind(count_df_Fetal, 
+                            data.frame(Cell_Type = missing, 
+                                       predicted.celltype = "monocyte", #picking arbitrary value here because there are no cells and won't mess up the factor levels
+                                       n = 0)) 
+
+p_Fetal<-ggplot(
+  count_df_Fetal,
+  aes(
+    x = Cell_Type,
+    y = n,
+    fill = predicted.celltype
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = adult_ref_colors) +
+  labs(
+    x = "Assigned Cell Type",
+    y = "Number of cells",
+    fill = "adult ref annotation"
+  ) +
+theme_bw() +NoLegend()
+p_Fetal
+
+p_Fetal + p_postnatal
+
+# get prop
+
+prop_df <-atlas_adult_meta %>% 
+  group_by(Cell_Type, postnatal) %>% 
+  summarise(value=n(),.groups = "drop") %>% 
+  data.frame()
+prop_df$Cell_Type <- factor(prop_df$Cell_Type, levels = rev(names(cellcolor)))
+prop_df$postnatal <- factor(prop_df$postnatal, levels = names(postnatal))
+p_prop<-ggplot(prop_df, aes(x=value,y=Cell_Type, fill = postnatal)) + 
+  geom_bar(position="fill", stat="identity") + 
+  scale_fill_manual(values = postnatal) + 
+  theme_bw() + NoLegend()
+
+p_prop+p_Fetal + p_postnatal
+
+```
+
+```{r}
+predict_Postnatal<- atlas_adult_meta %>%
+  subset(postnatal == "Postnatal") %>%
+  dplyr::group_by(Cell_Type,predicted.celltype) %>%
+  dplyr::summarise(
+    n = mean(predicted.celltype.score),
+    .groups = "drop"
+  ) %>% data.frame()
+
+
+highest_pred_postnatal<-count_df_postnatal %>% 
+  group_by(Cell_Type) %>% 
+  slice(which.max(n)) %>%
+  ungroup() %>% data.frame()
+
+
+highest_pred_postnatal$nCells_Cell_Type <- 0
+highest_pred_postnatal$prediction_score <- 0
+colnames(highest_pred_postnatal)[colnames(highest_pred_postnatal) == "n"] <- "nCells_predicted.celltype"
+celltype_n_tbl<-atlas_adult_meta %>%
+  subset(postnatal == "Postnatal") %>% 
+  select("Cell_Type") %>% 
+  table()
+for (cell in highest_pred_postnatal$Cell_Type) {
+  pred.cell <- highest_pred_postnatal[highest_pred_postnatal$Cell_Type == cell,"predicted.celltype"]
+  highest_pred_postnatal$nCells_Cell_Type[highest_pred_postnatal$Cell_Type == cell] <- celltype_n_tbl[[cell]]
+  highest_pred_postnatal$prediction_score[highest_pred_postnatal$Cell_Type == cell] <- predict_Postnatal[predict_Postnatal$Cell_Type == cell &
+                                                                                                       predict_Postnatal$predicted.celltype == pred.cell,"n"]
+}
+
+highest_pred_postnatal$predicted.celltype_prop<-highest_pred_postnatal$nCells_predicted.celltype / highest_pred_postnatal$nCells_Cell_Type
+
+rownames(highest_pred_postnatal) <- highest_pred_postnatal$Cell_Type
+
+highest_pred_postnatal<-highest_pred_postnatal[,colnames(highest_pred_postnatal)[c(1,2,3,4,6,5)]]
+write.csv(highest_pred_postnatal, "highest_predicted_adult_ref_postnatal.csv")
+
+
+
+predict_Fetal<- atlas_adult_meta %>%
+  subset(postnatal == "Fetal") %>%
+  dplyr::group_by(Cell_Type,predicted.celltype) %>%
+  dplyr::summarise(
+    n = mean(predicted.celltype.score),
+    .groups = "drop"
+  ) %>% data.frame()
+
+
+highest_pred_Fetal<-count_df_Fetal %>% 
+  group_by(Cell_Type) %>% 
+  slice(which.max(n)) %>%
+  ungroup() %>% data.frame()
+
+
+highest_pred_Fetal$nCells_Cell_Type <- 0
+highest_pred_Fetal$prediction_score <- 0
+colnames(highest_pred_Fetal)[colnames(highest_pred_Fetal) == "n"] <- "nCells_predicted.celltype"
+celltype_n_tbl<-atlas_adult_meta %>%
+  subset(postnatal == "Fetal") %>% 
+  select("Cell_Type") %>% 
+  table()
+for (cell in highest_pred_Fetal$Cell_Type) {
+  pred.cell <- highest_pred_Fetal[highest_pred_Fetal$Cell_Type == cell,"predicted.celltype"]
+  highest_pred_Fetal$nCells_Cell_Type[highest_pred_Fetal$Cell_Type == cell] <- celltype_n_tbl[[cell]]
+  highest_pred_Fetal$prediction_score[highest_pred_Fetal$Cell_Type == cell] <- predict_Fetal[predict_Fetal$Cell_Type == cell &
+                                                                                                           predict_Fetal$predicted.celltype == pred.cell,"n"]
+}
+
+highest_pred_Fetal$predicted.celltype_prop<-highest_pred_Fetal$nCells_predicted.celltype / highest_pred_Fetal$nCells_Cell_Type
+
+rownames(highest_pred_Fetal) <- highest_pred_Fetal$Cell_Type
+
+highest_pred_Fetal<-highest_pred_Fetal[,colnames(highest_pred_Fetal)[c(1,2,3,4,6,5)]]
+write.csv(highest_pred_Fetal, "highest_predicted_adult_ref_Fetal.csv")
+```
+
+
+
+```{r Ext 3e}
+# get number of cells that mapped properly
+atlas_fetal_meta$Cell_Type <- as.character(atlas_fetal_meta$Cell_Type)
+atlas_fetal_meta$sample_id <- as.character(atlas_fetal_meta$sample_id)
+atlas_fetal_meta$predicted.celltype <- as.character(atlas_fetal_meta$predicted.celltype)
+
+
+# Count cells by assigned Cell_Type and collapsed adult group
+count_df <- atlas_fetal_meta %>%
+  dplyr::group_by(Cell_Type, predicted.celltype) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+count_df$Cell_Type <- factor(count_df$Cell_Type, levels = rev(names(cellcolor)))
+count_df$predicted.celltype <- factor(count_df$predicted.celltype, levels = names(fetal_ref_colors))
+p<-ggplot(
+  count_df,
+  aes(
+    x = Cell_Type,
+    y = n,
+    fill = predicted.celltype
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = fetal_ref_colors) +
+  labs(
+    x = "Assigned Cell Type",
+    y = "Number of cells",
+    fill = "fetal ref annotation"
+  ) +
+  theme_bw()
+p
+
+# just fetal now
+count_df_fetal <- atlas_fetal_meta %>%
+  subset(postnatal == "Fetal") %>%
+  dplyr::group_by(Cell_Type, predicted.celltype) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+count_df_fetal$Cell_Type <- factor(count_df_fetal$Cell_Type, levels = rev(names(cellcolor)))
+count_df_fetal$predicted.celltype <- factor(count_df_fetal$predicted.celltype, levels = names(fetal_ref_colors))
+
+p<-ggplot(
+  count_df_fetal,
+  aes(
+    x = Cell_Type,
+    y = n,
+    fill = predicted.celltype
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = fetal_ref_colors) +
+  labs(
+    x = "Assigned Cell Type",
+    y = "Number of cells",
+    fill = "fetal ref annotation"
+  ) +
+  theme_bw()
+p
+
+
+
+predict_fetal <- atlas_fetal_meta %>%
+  subset(postnatal == "Fetal") %>%
+  dplyr::group_by(Cell_Type,predicted.celltype) %>%
+  dplyr::summarise(
+    n = mean(predicted.celltype.score),
+    .groups = "drop"
+  ) %>% data.frame()
+```
+
+```{r}
+highest_pred_fetal<-count_df_fetal %>% 
+  group_by(Cell_Type) %>% 
+  slice(which.max(n)) %>%
+  ungroup() %>% data.frame()
+
+
+highest_pred_fetal$nCells_Cell_Type <- 0
+highest_pred_fetal$prediction_score <- 0
+colnames(highest_pred_fetal)[colnames(highest_pred_fetal) == "n"] <- "nCells_predicted.celltype"
+celltype_n_tbl<-atlas_fetal_meta %>%
+  subset(postnatal == "Fetal") %>% 
+  select("Cell_Type") %>% 
+  table()
+for (cell in highest_pred_fetal$Cell_Type) {
+  pred.cell <- highest_pred_fetal[highest_pred_fetal$Cell_Type == cell,"predicted.celltype"]
+  highest_pred_fetal$nCells_Cell_Type[highest_pred_fetal$Cell_Type == cell] <- celltype_n_tbl[[cell]]
+  highest_pred_fetal$prediction_score[highest_pred_fetal$Cell_Type == cell] <- predict_fetal[predict_fetal$Cell_Type == cell &
+                                                                                               predict_fetal$predicted.celltype == pred.cell,"n"]
+}
+
+highest_pred_fetal$predicted.celltype_prop<-highest_pred_fetal$nCells_predicted.celltype / highest_pred_fetal$nCells_Cell_Type
+
+rownames(highest_pred_fetal) <- highest_pred_fetal$Cell_Type
+
+highest_pred_fetal<-highest_pred_fetal[,colnames(highest_pred_fetal)[c(1,2,3,4,6,5)]]
+write.csv(highest_pred_fetal, "highest_predicted_fetal.csv")
+
+
+# just postnatal now
+count_df_Postnatal <- atlas_fetal_meta %>%
+  subset(postnatal == "Postnatal") %>%
+  dplyr::group_by(Cell_Type, predicted.celltype) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+count_df_Postnatal$Cell_Type <- factor(count_df_Postnatal$Cell_Type, levels = rev(names(cellcolor)))
+count_df_Postnatal$predicted.celltype <- factor(count_df_Postnatal$predicted.celltype, levels = names(Postnatal_ref_colors))
+
+
+predict_Postnatal <- atlas_fetal_meta %>%
+  subset(postnatal == "Postnatal") %>%
+  dplyr::group_by(Cell_Type,predicted.celltype) %>%
+  dplyr::summarise(
+    n = mean(predicted.celltype.score),
+    .groups = "drop"
+  ) %>% data.frame()
+
+
+highest_pred_Postnatal<-count_df %>% 
+  group_by(Cell_Type) %>% 
+  slice(which.max(n)) %>%
+  ungroup() %>% data.frame()
+
+
+highest_pred_Postnatal$nCells_Cell_Type <- 0
+highest_pred_Postnatal$prediction_score <- 0
+colnames(highest_pred_Postnatal)[colnames(highest_pred_Postnatal) == "n"] <- "nCells_predicted.celltype"
+celltype_n_tbl<-atlas_fetal_meta %>%
+  subset(postnatal == "Postnatal") %>% 
+  select("Cell_Type") %>% 
+  table()
+for (cell in highest_pred_Postnatal$Cell_Type) {
+  pred.cell <- highest_pred_Postnatal[highest_pred_Postnatal$Cell_Type == cell,"predicted.celltype"]
+  highest_pred_Postnatal$nCells_Cell_Type[highest_pred_Postnatal$Cell_Type == cell] <- celltype_n_tbl[[cell]]
+  highest_pred_Postnatal$prediction_score[highest_pred_Postnatal$Cell_Type == cell] <- predict_Postnatal[predict_Postnatal$Cell_Type == cell &
+                                                                                                           predict_Postnatal$predicted.celltype == pred.cell,"n"]
+}
+
+highest_pred_Postnatal$predicted.celltype_prop<-highest_pred_Postnatal$nCells_predicted.celltype / highest_pred_Postnatal$nCells_Cell_Type
+
+rownames(highest_pred_Postnatal) <- highest_pred_Postnatal$Cell_Type
+
+highest_pred_Postnatal<-highest_pred_Postnatal[,colnames(highest_pred_Postnatal)[c(1,2,3,4,6,5)]]
+write.csv(highest_pred_Postnatal, "highest_predicted_Postnatal.csv")
+
+```
+
+```{r Ext 3f}
+# fetal only
+atlas_fetal_fetal <- subset(atlas_fetal, dev.group == "Fetal")
+DimPlot(atlas_fetal_fetal,
+        reduction = "ref_umap",
+        group.by = "Cell_Type",
+        cols = cellcolor)
+
+DimPlot(atlas_fetal_fetal,
+        reduction = "ref_umap",
+        group.by = "predicted.celltype",
+        cols = fetal_ref_colors)
+
+```
+
+
+```{r Ext 3g}
+neural_crest<-subset(fetal, CellClass == "Neural crest")
+fetalcop<-subset(atlas_fetal, Cell_Type == "Fetal COP")
+
+neural_crest$Cell_Type <- "Neural crest"
+fetal_nc_cop <- merge(fetalcop,neural_crest)
+
+
+
+cols <- c(cellcolor["Fetal COP"], fetal_ref_colors["Neural crest"])
+
+
+VlnPlot(fetal_nc_cop, group.by = "Cell_Type", cols=cols,features = 
+                c("SOX10", "YAP1", "SOX2","TCF7L2","PLP1","SOX9","SNAI2","EGR2"),
+              pt.size = 0, layer="counts", ncol = 4)
+```
+

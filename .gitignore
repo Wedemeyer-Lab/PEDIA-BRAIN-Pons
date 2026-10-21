@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/raw/*
+output/objects/*
+code/misc/*
+output/tables/mapping/*
+analysis/old/*
+output/*
+analysis/Sheldon/*
+analysis/misc/*

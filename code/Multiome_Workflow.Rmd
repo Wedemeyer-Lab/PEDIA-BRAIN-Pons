@@ -1,0 +1,623 @@
+---
+title: "Multiome Workflow"
+author: "Gary Schweickart"
+date: "2024-05-22"
+output: html_document
+---
+
+# Setup: Load Libraries and multiome functions
+```{r setup, include=FALSE}
+# Load packages
+library(GenomeInfoDb)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(readxl)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(JASPAR2020) 
+library(TFBSTools)
+```
+
+```{r set seed}
+set.seed(6)
+```
+
+```{r load multiome functions}
+# Loud multiome functions
+source("code/multiomeFunctions.R")
+```
+
+
+```{r mkdirs}
+dir.create("output/objects")
+dir.create("output/objects/lists")
+dir.create("output/objects/individual")
+```
+
+# Create Seurat Object for pediatric samples
+
+```{r get annotations}
+# get annotation 
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "hg38"
+```
+
+```{r establish paths}
+# set file paths
+input.path <- "data/raw/matrix_files"
+out.base <- "output/objects"
+# get list of sample names
+sample.names <- list.dirs(input.path, full.names = FALSE, recursive = FALSE)
+```
+
+```{r create sobjs}
+# Run create_sobj function
+sobj.list <- lapply(sample.names, create_sobj, input.path, out.base=paste0(out.base,"/objects"), annotations)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, file = paste0(out.base, "/lists/sobj.list.raw.rds"))
+print("All saved.")
+```
+
+```{r metadata}
+# Get sample metadata
+md <- read_excel("data/meta/pedia_sample_data.xlsx")
+md$race[md$race == "Black or African-American"] <- "African-American"
+rownames(md) <- md$sample
+
+for (name in names(sobj.list)) {
+  sobj.list[[name]]@meta.data$Age_years <- md[name, 'AGEYEARS'][[1]]
+  sobj.list[[name]]@meta.data$Age_days <- md[name, 'AGEDAYS'][[1]]
+  sobj.list[[name]]@meta.data$Sex <- md[name, 'sex'][[1]]
+  sobj.list[[name]]@meta.data$Race <- md[name, 'race'][[1]]
+  sobj.list[[name]]@meta.data$sample_id <- name
+  age <- sobj.list[[name]]@meta.data$Age_years[1]
+  sobj.list[[name]]@meta.data$age.name <- case_when(age >= 0 & age <= 2 ~ "Infant",
+                                                    age >= 4 & age <= 8 ~ "Child", 
+                                                    age >= 13 & age <= 14 ~ "Adolscent")
+    
+}
+
+
+```
+
+# Cell Cycle Scoring
+
+```{r ccs}
+sobj.list <- lapply(sobj.list, cellCycleScoring)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, paste0(out.base, "/objects/lists/sobj.list.ccs.rds"))
+```
+
+# Multiome Quality Control (QC) metrics and plots
+  
+## QC metrics
+  
+```{r QC metrics}
+# create output directory
+dir.create(paste0(out.base, "/QC"))
+# run qc function
+sobj.list <- lapply(sobj.list, plotQC, frag.base.path = input.path, frag.full.path = NULL, out =paste0(out.base, "/QC"), 
+                  sample=NULL, sample.column = "sample_id", find.markers= TRUE, 
+                  run.macs2 = FALSE, macs2.path = NULL, group.by.macs2 = "seurat_clusters")
+```
+## MACS2
+
+```{r}
+dir.create(paste0(out.base, "/MACS2"))
+# insert macs2 path
+macs2.path <- ""
+sobj.list <-lapply(sobj.list, runMACS2, macs2.path= macs2.path, frag.base.path = input.path,
+                   frag.full.path = NULL, out=paste0(out.base, "/MACS2"), 
+                   group.by="seurat_clusters", sample.column = "sample_id",
+                   find.markers=TRUE, annotations=annotations)
+```
+
+```{r}
+# save list
+saveRDS(sobj.list, paste0(out.base, "/objects/lists/sobj.list.metrics.rds"))
+```
+
+## Merge Seurat Objects
+
+```{r merge}
+dir.create(paste0(out.base, "/objects/merged"))
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+sobj.merged <- JoinLayers(sobj.merged)
+saveRDS(sobj.merged, paste0(out.base,"/objects/merged/sobj.merged.rds"))
+```
+
+```{r}
+rm(sobj.list)
+```
+
+## Merged QC
+
+```{r}
+dir.create(paste0(out.base, "/QC/merged"))
+sobj.merged <- plotQC(sobj = sobj.merged, out = paste0(out.base, "/QC/merged"), merged = TRUE, sample = NULL, sample.column = NULL)
+```
+
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+```{bash}
+# make genes folder
+mkdir output/objects/pediatric_multi/genes
+
+for d in data/raw/SC0*/; 
+  do 
+    name=$(basename $d)
+    gunzip -c data/raw/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  >  output/objects/genes/"$name"_features.tsv
+  done
+```
+
+
+Then we run scrublet in python (code/scrub.py).
+
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="output/pediatric_multi/samples.csv"
+input_dir="data/counts/pediatric_multi/"
+output_dir="output/pediatric_multi/objects/scrub/"
+gene_dir="output/objects/pediatric_multi/genes"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+Back to R to add doublet score to metadata.
+```{r}
+# Get doublet scores
+sobj.merged@meta.data$doublet_score <- "0"
+for (sample in sample.names) {
+  pscrub <- read_table(paste0(out.base,"/scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  sobj.merged@meta.data[sobj.merged@meta.data$sample_id == sample, "doublet_score"] <- pscrub$X1
+}
+sobj.merged@meta.data$Predicted_Doublets <- ifelse(sobj.merged$doublet_score > 0.25, "Doublet","Singlet" )
+table(sobj.merged@meta.data$Predicted_Doublets)
+
+saveRDS(sobj.merged, paste0(out.base, "/objects/merged/sobj.merged.metrics.rds"))
+```
+
+## Assign QC cutoffs and subset
+
+```{r}
+sobj.merged <- subset(sobj.merged,
+               subset = 
+                 TSS.enrichment > 1.5 &
+                 nucleosome_signal < 2.5 &
+                 blacklist_ratio < 0.05 &
+                 nFeature_ATAC < 30000 &
+                 nCount_ATAC < 80000 &
+                 nFeature_RNA < 5000 &
+                 nCount_RNA < 30000 &
+                 percent.mt < 20 &
+                 Predicted_Doublets == "Singlet")
+```
+
+## Save and remove seurat object 
+```{r save }
+saveRDS(sobj.merged, paste0(out.base, "/objects/merged/sobj.merged.qc.rds"))
+```
+
+```{r remove}
+rm(sobj.merged)
+```
+
+# Create Seurat Object for adult data
+
+```{r establish paths for adult}
+# set file paths
+input.path <- "data/raw/matrix_files/adult"
+out.base <- "output/objects/"
+# get list of sample names
+sample.names <- list.dirs(input.path, full.names = FALSE, recursive = FALSE)
+```
+
+```{r create sobjs}
+# Run create_sobj function
+sobj.list <- lapply(sample.names, create_sobj, input.path, out.base=paste0(out.base,"/objects"), annotations)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, file = paste0(out.base, "/lists/sobj.adult.list.raw.rds"))
+print("All saved.")
+```
+
+```{r metadata}
+# Get sample metadata
+md <- read_excel("data/meta/adult_sample_data.xlsx")
+md$Race[md$Race == "Black or African-American"] <- "African-American"
+md <- md[md$`Brain Region` == "Pons",]
+md$sample_id <- sample.names
+rownames(md) <- md$sample_id
+
+
+```
+
+# Cell Cycle Scoring
+
+```{r ccs}
+sobj.list <- lapply(sobj.list, cellCycleScoring)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, paste0(out.base, "/objects/lists/sobj.adult.list.ccs.rds"))
+```
+
+# Multiome Quality Control (QC) metrics and plots
+  
+## QC metrics
+  
+```{r QC metrics}
+# create output directory
+dir.create(paste0(out.base, "/QC"))
+# run qc function
+sobj.list <- lapply(sobj.list, plotQC, frag.base.path = input.path, frag.full.path = NULL, out =paste0(out.base, "/QC"), 
+                  sample=NULL, sample.column = "sample_id", find.markers= TRUE, 
+                  run.macs2 = FALSE, macs2.path = NULL, group.by.macs2 = "seurat_clusters")
+```
+## MACS2
+
+```{r}
+dir.create(paste0(out.base, "/MACS2"))
+# insert macs2 path
+macs2.path <- ""
+sobj.list <-lapply(sobj.list, runMACS2, macs2.path= macs2.path, frag.base.path = input.path,
+                   frag.full.path = NULL, out=paste0(out.base, "/MACS2"), 
+                   group.by="seurat_clusters", sample.column = "sample_id",
+                   find.markers=TRUE, annotations=annotations)
+```
+
+```{r}
+# save list
+saveRDS(sobj.list, paste0(out.base, "/objects/lists/sobj.adult.list.metrics.rds"))
+```
+
+## Merge Seurat Objects
+
+```{r merge}
+dir.create(paste0(out.base, "/objects/merged"))
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+sobj.merged <- JoinLayers(sobj.merged)
+saveRDS(sobj.merged, paste0(out.base,"/objects/merged/sobj.adult.merged.rds"))
+```
+
+## Merged QC
+
+```{r}
+dir.create(paste0(out.base, "/QC/merged"))
+sobj.merged <- plotQC(sobj = sobj.merged, out = paste0(out.base, "/QC/merged"), merged = TRUE, sample = NULL, sample.column = NULL)
+```
+
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+```{bash}
+# make genes folder
+mkdir output/objects/adult_multi/genes
+
+for d in data/raw/SC0*/; 
+  do 
+    name=$(basename $d)
+    gunzip -c data/raw/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  >  output/objects/genes/"$name"_features.tsv
+  done
+```
+
+
+Then we run scrublet in python (code/scrub.py).
+
+
+
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="output/adult_multi/samples.csv"
+input_dir="data/counts/adult_multi/"
+output_dir="output/adult_multi/objects/scrub/"
+gene_dir="output/objects/adult_multi/genes"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+Back to R to add doublet score to metadata.
+```{r}
+# Get doublet scores
+sobj.merged@meta.data$doublet_score <- "0"
+for (sample in sample.names) {
+  pscrub <- read_table(paste0(out.base,"/scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  sobj.merged@meta.data[sobj.merged@meta.data$sample_id == sample, "doublet_score"] <- pscrub$X1
+}
+sobj.merged@meta.data$Predicted_Doublets <- ifelse(sobj.merged$doublet_score > 0.25, "Doublet","Singlet" )
+table(sobj.merged@meta.data$Predicted_Doublets)
+
+saveRDS(sobj.merged, paste0(out.base, "/objects/merged/sobj.adult.merged.metrics.rds"))
+```
+
+## Assign QC cutoffs and subset
+
+```{r}
+sobj.merged <- subset(sobj.merged,
+               subset = 
+                 TSS.enrichment > 1.5 &
+                 nucleosome_signal < 2.5 &
+                 blacklist_ratio < 0.05 &
+                 nFeature_ATAC < 30000 &
+                 nCount_ATAC < 80000 &
+                 nFeature_RNA < 5000 &
+                 nCount_RNA < 30000 &
+                 percent.mt < 20 &
+                 Predicted_Doublets == "Singlet")
+```
+
+## Save and remove seurat object 
+```{r save }
+saveRDS(sobj.merged, paste0(out.base, "/objects/merged/sobj.adult.merged.qc.rds"))
+```
+
+```{r remove}
+rm(sobj.merged)
+```
+
+# Create Seurat Object for fetal data
+
+```{r establish paths for fetal}
+# set file paths
+input.path <- "data/raw/matrix_files/fetal"
+out.base <- "output/objects/"
+# get list of sample names
+sample.names <- list.dirs(input.path, full.names = FALSE, recursive = FALSE)
+```
+
+```{r create sobjs}
+# Run create_sobj function
+sobj.list <- lapply(sample.names, create_sobj, input.path, out.base=paste0(out.base,"/objects"), annotations)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, file = paste0(out.base, "/lists/sobj.fetal.list.raw.rds"))
+print("All saved.")
+```
+
+```{r metadata}
+# Get sample metadata
+md <- read_excel(paste0("data/meta/fetal_sample_data.xlsx")) ## FROM https://github.com/linnarsson-lab/fetal_brain_multiomics/blob/main/files/supplementals/Extended_data_1_sample_data.xlsx
+md$sample_id <- sample.names
+rownames(md) <- md$sample_id
+
+for (name in names(sobj.list)) {
+  sobj.list[[name]]@meta.data$age <- paste0(md[name, 'Age_PCW'][[1]], " PCW")
+  sobj.list[[name]]@meta.data$Sex <- NA
+  sobj.list[[name]]@meta.data$Race <- NA
+  sobj.list[[name]]@meta.data$sample_id <- name
+  sobj.list[[name]]@meta.data$dev.group <- "Fetal"
+  sobj.list[[name]]@meta.data$age.group <- "fetal"
+}
+
+
+```
+
+# Cell Cycle Scoring
+
+```{r ccs}
+sobj.list <- lapply(sobj.list, cellCycleScoring)
+names(sobj.list) <- sample.names
+saveRDS(sobj.list, paste0(out.base, "/objects/lists/sobj.fetal.list.ccs.rds"))
+```
+
+# Multiome Quality Control (QC) metrics and plots
+  
+## QC metrics
+  
+```{r QC metrics}
+# create output directory
+dir.create(paste0(out.base, "/QC"))
+# run qc function
+sobj.list <- lapply(sobj.list, plotQC, frag.base.path = input.path, frag.full.path = NULL, out =paste0(out.base, "/QC"), 
+                  sample=NULL, sample.column = "sample_id", find.markers= TRUE, 
+                  run.macs2 = FALSE, macs2.path = NULL, group.by.macs2 = "seurat_clusters")
+```
+## MACS2
+
+```{r}
+dir.create(paste0(out.base, "/MACS2"))
+# insert macs2 path
+macs2.path <- ""
+sobj.list <-lapply(sobj.list, runMACS2, macs2.path= macs2.path, frag.base.path = input.path,
+                   frag.full.path = NULL, out=paste0(out.base, "/MACS2"), 
+                   group.by="seurat_clusters", sample.column = "sample_id",
+                   find.markers=TRUE, annotations=annotations)
+```
+
+```{r}
+# save list
+saveRDS(sobj.list, paste0(out.base, "/objects/lists/sobj.fetal.list.metrics.rds"))
+```
+
+## Merge Seurat Objects
+
+```{r merge}
+dir.create(paste0(out.base, "/objects/merged"))
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+sobj.merged <- JoinLayers(sobj.merged)
+saveRDS(sobj.merged, paste0(out.base,"/objects/merged/sobj.fetal.merged.rds"))
+```
+
+## Merged QC
+
+```{r}
+dir.create(paste0(out.base, "/QC/merged"))
+sobj.merged <- plotQC(sobj = sobj.merged, out = paste0(out.base, "/QC/merged"), merged = TRUE, sample = NULL, sample.column = NULL)
+```
+
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+```{bash}
+# make genes folder
+mkdir output/objects/fetal_multi/genes
+
+for d in data/raw/SC0*/; 
+  do 
+    name=$(basename $d)
+    gunzip -c data/raw/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  >  output/objects/genes/"$name"_features.tsv
+  done
+```
+
+
+Then we run scrublet in python (code/scrub.py).
+
+
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="output/fetal_multi/samples.csv"
+input_dir="data/counts/fetal_multi/"
+output_dir="output/fetal_multi/objects/scrub/"
+gene_dir="output/objects/fetal_multi/genes"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+Back to R to add doublet score to metadata.
+```{r}
+# Get doublet scores
+sobj.merged@meta.data$doublet_score <- "0"
+for (sample in sample.names) {
+  pscrub <- read_table(paste0(out.base,"/scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  sobj.merged@meta.data[sobj.merged@meta.data$sample_id == sample, "doublet_score"] <- pscrub$X1
+}
+sobj.merged@meta.data$Predicted_Doublets <- ifelse(sobj.merged$doublet_score > 0.25, "Doublet","Singlet" )
+table(sobj.merged@meta.data$Predicted_Doublets)
+
+saveRDS(sobj.merged, paste0(out.base, "/objects/merged/sobj.fetal.merged.metrics.rds"))
+```
+
+## Assign QC cutoffs and subset
+
+```{r}
+sobj.merged <- subset(sobj.merged,
+               subset = 
+                 TSS.enrichment > 1.5 &
+                 nucleosome_signal < 2.5 &
+                 blacklist_ratio < 0.05 &
+                 nFeature_ATAC < 30000 &
+                 nCount_ATAC < 80000 &
+                 nFeature_RNA < 5000 &
+                 nCount_RNA < 30000 &
+                 percent.mt < 20 &
+                 Predicted_Doublets == "Singlet")
+```
+
+## Save and remove seurat object 
+```{r save }
+saveRDS(sobj.merged, paste0(out.base, "/objects/merged/sobj.fetal.merged.qc.rds"))
+```
+
+```{r remove}
+rm(sobj.merged)
+```
+
+
+# merge all (fetal, pediatric, adult)
+```{r}
+# merge fetal, pediatric, adult
+fetal <- readRDS(paste0(out.base, "/objects/merged/sobj.fetal.merged.qc.rds"))
+pediatric <- readRDS(paste0(out.base, "/objects/merged/sobj.merged.qc.rds"))
+adult <- readRDS(paste0(out.base, "/objects/merged/sobj.adult.merged.qc.rds"))
+```
+
+``` {r}
+sobj.list <- c(fetal, pediatric, adult)
+
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+saveRDS(sobj.merged, paste0(out.base,"/objects/atlas.merged.rds"))
+```
+
+# Integrate using Harmony
+
+```{r}
+# Perform log-normalization and feature selection, as well as SCT normalization on global object
+DefaultAssay(sobj.merged) <- "RNA"
+sobj.merged <- sobj.merged %>%
+  NormalizeData() %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%
+  ScaleData() %>%
+  SCTransform(vars.to.regress = NULL)
+saveRDS(sobj.merged, file = paste0(out.base, "/objects/merged/atlas.mergedSCT.RDS"))
+```
+
+
+## Calculate PCs using variable features determined by SCTransform (3000 by default)
+
+```{r}
+sobj.merged <- RunPCA(sobj.merged, assay = "SCT", npcs = 50)
+saveRDS(sobj.merged, file = paste0(out.base, "/objects/atlas.mergedPCA.RDS"))
+```
+
+``` {r}
+sobj.harmony <- RunHarmony(sobj.merged,
+                           group.by.vars = c("sample_id"),
+                           reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+
+``` 
+
+``` {r}
+DefaultAssay(sobj.harmony) <- "ATAC"
+sobj.harmony <- RunTFIDF(sobj.harmony)
+sobj.harmony <- FindTopFeatures(sobj.harmony, min.cutoff = 'q0')
+sobj.harmony <- RunSVD(sobj.harmony)
+sobj.harmony <- RunUMAP(sobj.harmony, dims = 2:50, reduction = 'lsi')
+```
+
+
+```{r}
+sobj.harmony <- RunHarmony(object = sobj.harmony, group.by.vars = c('sample_id'),
+                           reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+
+```
+
+```{r}
+saveRDS(sobj.harmony, paste0(out.base, "/objects/atlas.harmony.RDS"))
+```
+
+# Now find clusters using the seurat object normalized with harmony
+
+``` {r}
+# RNA
+DefaultAssay(sobj.harmony) <- "SCT"
+
+sobj.harmony <- sobj.harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+```
+
+``` {r}
+# ATAC
+DefaultAssay(sobj.harmony) <- "ATAC"
+sobj.harmony <- RunUMAP(sobj.harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+```
+
+``` {r}
+saveRDS(sobj.harmony,paste0(out.base, "/objects/atlas.clustered.RDS"))
+```
+
+# WNN
+```{r}
+sobj <- FindMultiModalNeighbors(sobj, reduction.list = list("rna_harmony", "atac_harmony"), dims.list = list(1:50, 2:50))
+sobj <- RunUMAP(sobj, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+sobj <- FindClusters(sobj, graph.name = "wsnn",resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), algorithm = 3, verbose = FALSE)
+```
+
+```{r}
+saveRDS(sobj, file = "output/objects/atlas.RDS")
+```
+

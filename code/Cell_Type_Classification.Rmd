@@ -1,0 +1,377 @@
+---
+title: "Cell_Type_Classification"
+author: "Sheldon Ding & Gary Schweickart"
+date: "2026-10-20"
+output: html_document
+---
+```{r}
+#packages (some packages might require dependent packages)
+library(Matrix)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(harmony)
+library(clustree)
+library(GenomicRanges)
+library(msigdbr)
+library(clusterProfiler)
+library(IRanges)
+library(Biostrings)
+library(biomaRt)
+library(DESeq2)
+library(scCustomize)
+library(openxlsx)
+library(rGREAT)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(ComplexHeatmap)
+library(circlize)
+library(ggplot2)
+library(tidyverse)
+library(broom)
+library(ggfortify)
+library(car)
+library(ggpmisc)
+library(dplyr)
+```
+
+```{r}
+sobj <- readRDS("output/objects/atlas.RDS")
+```
+
+
+```{r}
+# determine weighted-nearset neighbour (wnn) analysis resolution and number of clusters
+clustree(sobj) #determined the wnn resolution @ 0.2 and 40 clusters in total
+
+# set wsnn resolution as active identity for further analysis
+Idents(sobj) <- "wsnn_res.0.2"
+
+# calculate differentially expressed genes (DEG) between different clusters using DESeq2
+DefaultAssay(sobj) <- "RNA"
+
+agg<-AggregateExpression(sobj,assays="RNA", return.seurat=F, group.by=c("sample_id","wsnn_res.0.2"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- sobj@meta.data[, c("wsnn_res.0.2","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$sample_id, meta$wsnn_res.0.2)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$wsnn_res.0.2,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+cellcount<-table(sobj$wsnn_res.0.2,sobj$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+# check
+
+all(rownames(meta_unique) == colnames(pb))
+
+DEA <- unique(meta_unique$wsnn_res.0.2)
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+ct_meta$wsnn_res.0.2 <- factor(ct_meta$wsnn_res.0.2, levels = as.character(0:39))
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ wsnn_res.0.2 + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+estimateSizeFactors(dds, type = 'iterate')
+dds <- DESeq(dds,betaPrior=TRUE)
+vsd <- vst(dds)
+
+DEG_res_list_ct <- list()
+for (cell in gsub(" ", ".", gsub("\\+", ".", DEA))) {
+  message(cell)
+  
+  res <- results(dds, name = paste0("wsnn_res.0.2", cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df <- subset(res.df, log2FoldChange > 0)
+  res.df <- res.df[order(res.df$padj, decreasing = FALSE), ]
+  
+  res.df$pct.expressed <- NA_real_
+  
+  sig_idx <- complete.cases(res.df[, c("padj", "log2FoldChange")]) &
+    res.df$padj < 0.05 &
+    res.df$log2FoldChange > 1
+  
+  features <- res.df$gene[sig_idx]
+  
+  if (length(features) > 0) {
+    pct <- scCustomize::Percent_Expressing(
+      sobj,
+      features = features,
+      assay = "RNA",
+      group.by = "wsnn_res.0.2"
+    )
+    
+    pct_col <- make.names(cell)
+    
+    if (!pct_col %in% colnames(pct)) {
+      warning(paste("Column not found:", pct_col))
+      print(colnames(pct))
+    } else {
+      res.df$pct.expressed[sig_idx] <- pct[features, pct_col]
+    }
+  }
+  
+  DEG_res_list_ct[[cell]] <- res.df
+}
+```
+
+``` {r}
+# based on DEG and canonical marker, we determined cell type of each cluster
+# set cluster identity to cell type
+Idents(sobj) <- "wsnn_res.0.2"
+new_names <- c(
+  "0" = "OL",
+  "1" = "OL",
+  "2" = "Astrocyte",
+  "3" = "Myeloid",
+  "4" = "Intermediate Proliferative Cell",
+  "5" = "Radial Glia",
+  "6" = "Neuron",
+  "7" = "PAX6+ HOXB3+ Neuroblast",
+  "8" = "OPC",
+  "9" = "PAX6+ NEUROD1+ Neuroblast",
+  "10" = "Early OL",
+  "11" = "Fetal Neuronal Progenitor",
+  "12" = "OPC",
+  "13" = "Endothelial",
+  "14" = "Ependymal",
+  "15" = "Myeloid",
+  "16" = "Mesenchymal",
+  "17" = "Pericyte",
+  "18" = "Radial Glia",
+  "19" = "Fetal COP",
+  "20" = "Myeloid",
+  "21" = "Erythroblast",
+  "22" = "Neuron",
+  "23" = "OL",
+  "24" = "OL",
+  "25" = "OL",
+  "26" = "Radial Glia",
+  "27" = "OL",
+  "28" = "OL",
+  "29" = "OL",
+  "30" = "Astrocyte",
+  "31" = "OPC",
+  "32" = "OL",
+  "33" = "OL",
+  "34" = "OL",
+  "35" = "OL",
+  "36" = "OL",
+  "37" = "OL",
+  "38" = "Astrocyte",
+  "39" = "Myeloid"
+)
+
+sobj <- RenameIdents(sobj, new_names)
+
+
+
+
+sobj@active.ident <- factor(x = sobj@active.ident, levels = c("Ependymal", "Radial Glia", "Intermediate Proliferating Cell", "PAX6+ HOXB3+ Neuroblast", "PAX6+ NEUROD1+ Neuroblast", "Neuronal Progenitor","Neuron","Astrocyte","OPC", "Fetal COP","Early OL", "OL","Mesenchymal", "Myeloid", "Endothelial",  "Erythroblast", "Pericyte"))
+
+# add metadata of Cell_Type
+sobj$Cell_Type <- sobj@active.ident
+```
+
+```{r}
+# subset Fetal Neuronal Progenitor cells (they have several different markers enriched)
+FNP_subcluster <-subset(sobj, Cell_Type == "Fetal Neuronal Progenitor")
+```
+
+```{r}
+#run harmony to remove batch effect again on RNA assay
+FNP_harmony <- FNP_subcluster 
+DefaultAssay(FNP_harmony) <- "RNA"
+FNP_harmony <- FNP_harmony %>% NormalizeData() %>%FindVariableFeatures(selection.method = "vst", nfeatures=3000) %>%   ScaleData() %>%SCTransform(vars.to.regress = NULL)
+FNP_harmony <- RunPCA(FNP_harmony, assay = "SCT", npcs = 50)
+FNP_harmony <- RunHarmony(FNP_harmony,group.by.vars = c("sample_id"),reduction = "pca", assay.use = "SCT", reduction.save = "rna_harmony")
+```
+
+```{r}
+FNP_harmony <- FNP_harmony  %>%
+  RunUMAP(reduction = "rna_harmony", assay = "SCT", dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_') %>%
+  FindNeighbors(reduction = "rna_harmony") %>%
+  FindClusters(resolution = c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2), verbose = TRUE)
+```
+
+```{r}
+clustree::clustree(FNP_harmony)
+```
+
+```{r}
+DimPlot(FNP_harmony, group.by = "SCT_snn_res.0.6")
+```
+
+```{r}
+DimPlot(FNP_harmony, group.by = "postnatal")
+```
+
+```{r}
+FeaturePlot(FNP_harmony, features=c("CD3D","CD3E","PTPRC",
+                                    "STMN2","TUBB3","GAD1",
+                                    "GAD2","SLC17A6","RBFOX3"),coord.fixed = T)
+```
+
+```{r}
+agg<-AggregateExpression(FNP_harmony,assays="RNA", return.seurat=F, group.by=c("sample_id","SCT_snn_res.0.6"))
+pb <- agg$RNA
+colnames(pb)<- gsub("-","_",colnames(pb))
+meta <- FNP_harmony@meta.data[, c("SCT_snn_res.0.6","sample_id","dev.group","Sex","Race","postnatal")]
+
+meta_unique <- meta[!duplicated(paste(meta$SCT_snn_res.0.6, meta$sample_id)), ]
+
+meta_unique$colname <- paste(meta_unique$sample_id,
+                             meta_unique$SCT_snn_res.0.6,
+                             sep = "_") %>% gsub("-","_",.)
+rownames(meta_unique) <- meta_unique$colname
+rownames(meta_unique)[grep("10X",rownames(meta_unique))] <- paste0("g",rownames(meta_unique)[grep("10X",rownames(meta_unique))])
+meta_unique <- meta_unique[colnames(pb), ]
+
+
+cellcount<-table(FNP_harmony$SCT_snn_res.0.6,FNP_harmony$sample_id) %>% data.frame()
+rownames(cellcount)<-paste(cellcount$Var2,cellcount$Var1,sep="_")
+rownames(cellcount)[grep("10X", rownames(cellcount))] <- paste0("g",rownames(cellcount)[grep("10X", rownames(cellcount))]) 
+
+
+
+meta_unique$CellCount<-cellcount[rownames(meta_unique),]$Freq
+
+#check
+
+all(rownames(meta_unique) == colnames(pb))
+
+#DEA
+celltypes <- unique(meta_unique$SCT_snn_res.0.6)
+
+
+
+res_list_ct <- list()
+
+```
+
+```{r}
+
+ct_counts <- pb
+ct_meta   <- meta_unique
+
+ct_meta<-ct_meta[rownames(ct_meta[ct_meta$CellCount > 10,]),]
+ct_counts<-ct_counts[,rownames(ct_meta[ct_meta$CellCount > 10,])]
+
+ct_meta$dev.group <- factor(ct_meta$dev.group,
+                            levels = c("Fetal","Infant","Child","Adolescent","Adult"))
+ct_meta$Sex[is.na(ct_meta$Sex)] <- "NAFetal"
+ct_meta$Sex <- factor(ct_meta$Sex)
+
+
+
+dds <- DESeqDataSetFromMatrix(
+  countData = round(ct_counts),
+  colData = ct_meta,
+  design = ~ SCT_snn_res.0.6 + dev.group
+)
+
+keep_genes <- rowSums(counts(dds)) >= 10
+dds <- dds[keep_genes, ]
+
+dds <- DESeq(dds,betaPrior = T)
+vsd <- varianceStabilizingTransformation(dds)
+p<-plotPCA(vsd,intgroup="SCT_snn_res.0.6") + ggtitle("SCT_snn_res.0.6") +
+  plotPCA(vsd,intgroup="dev.group") + ggtitle("dev.group") +
+  plotPCA(vsd,intgroup="postnatal") + ggtitle("postnatal") +
+  plotPCA(vsd,intgroup="Sex") + ggtitle("Sex") +
+  plotPCA(vsd,intgroup="Race") + ggtitle("Race")
+
+
+
+res_list <- list()
+for(cell in gsub(" ",".",unique(ct_meta$SCT_snn_res.0.6))){
+  res <- results(dds, name=paste0("SCT_snn_res.0.6",cell))
+  res.df <- data.frame(res)
+  res.df$gene <- rownames(res.df)
+  res.df<-res.df[order(res.df$log2FoldChange, decreasing = T),]
+  res_list[[cell]] <- res.df}
+
+```
+
+```{r}
+DefaultAssay(FNP_harmony) <- "ATAC" 
+FNP_harmony <- RunTFIDF(FNP_harmony) 
+FNP_harmony <- FindTopFeatures(FNP_harmony, min.cutoff = 'q0') 
+FNP_harmony <- RunSVD(FNP_harmony) 
+FNP_harmony <- RunUMAP(FNP_harmony, dims = 2:50, reduction = 'lsi')
+FNP_harmony <- RunHarmony(object = FNP_harmony, group.by.vars = c('sample_id'),reduction = 'lsi', assay.use = 'ATAC', project.dim = FALSE,  reduction.save = "atac_harmony")
+FNP_harmony <- RunUMAP(FNP_harmony, dims = 2:50, reduction = 'atac_harmony', reduction.name = 'umap.atac', reduction.key = 'atacUMAP_')
+```
+
+```{r}
+FNP_harmony <- FindMultiModalNeighbors(FNP_harmony, reduction.list = list("rna_harmony", "atac_harmony"), dims.list = list(1:50, 2:50))
+FNP_harmony <- RunUMAP(FNP_harmony, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+FNP_harmony <- FindClusters(FNP_harmony, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+```
+
+```{r}
+DimPlot(FNP_harmony, reduction= "wnn.umap", group.by = "Cell_Type")
+```
+
+```{r}
+DimPlot(FNP_harmony, reduction= "wnn.umap", group.by = "postnatal")
+```
+
+```{r}
+FeaturePlot(FNP_harmony, reduction= "wnn.umap", features = c("nCount_RNA","nCount_ATAC", "nFeature_RNA","nFeature_ATAC"))
+
+DefaultAssay(FNP_harmony) <- "RNA"
+FeaturePlot(FNP_harmony, reduction= "wnn.umap", features = c("CD3D","GFAP","MOBP","PTPRC","STMN2","TUBB3"))
+
+for (g in  c("CD3D","GFAP","MOBP","PTPRC","STMN2","TUBB3")) {
+  p<-CoveragePlot(FNP_harmony, region=g,group.by = "SCT_snn_res.0.6", annotation = F,peaks = F,assay="ATAC") &  theme(
+    panel.background = element_rect(fill = "gray")
+  )
+}
+
+DotPlot(FNP_harmony, features =  c("STMN2","TUBB3","GFAP","MOBP","CD3D","PTPRC"),group.by = "wsnn_res.0.8")
+```
+
+```{r}
+FNP_harmony$Cell_Type<-case_when(FNP_harmony$wsnn_res.0.8 == 3 ~ "Lymphocyte",
+          (FNP_harmony$wsnn_res.0.8 != 3) & (FNP_harmony$postnatal == "Postnatal")  ~ "Postnatal Glial Progenitor", 
+           (FNP_harmony$wsnn_res.0.8 != 3) & (FNP_harmony$postnatal != "Postnatal")  ~ "Fetal Neuronal Progenitor")
+```
+
+```{r transfer labels to atlas}
+sobj@meta.data[rownames(FNP_harmony@meta.data),"Cell_Type"] <- FNP_harmony$Cell_Type
+```
+
+```{r save atlas}
+saveRDS(sobj,"output/objects/atlas.RDS")
+```
+
+
+
+
+

@@ -1,0 +1,1489 @@
+---
+title: "Mapping Objects"
+author: "Gary Schweickart"
+date: "2024-05-15"
+output: html_document
+---
+## Setup
+
+
+```{r}
+# Load packages
+library(GenomeInfoDb)
+library(Matrix)
+library(Signac)
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(readxl)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(JASPAR2020) 
+library(TFBSTools)
+library(harmony)
+```
+
+```{r}
+set.seed(6)
+```
+
+## Pediatric Cancer Atlas data
+
+```{r}
+# create vector of sample names
+samples <- list.dirs(path = "data/counts/pediatric_cancer/", 
+                     full.names = F, 
+                     recursive = F)[grep("SRR", 
+                                         list.dirs(path = "data/counts/counts/pediatric_cancer/", 
+                                                   full.names = F, 
+                                                   recursive = F))]
+```
+
+```{r}
+# get annotation 
+# cannot get it to work on the igmmaster r but it works on local r
+# ran code on local and imported annotations
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "hg38"
+```
+
+## Create Seurat Objects for each sample
+### save Seurat objects as individual RDS files
+
+``` {r}
+# set file paths
+input.path <- "counts/pediatric_cancer/"
+md <- read.csv("data/meta/scpca_meta.csv", row.names = 1)
+
+dir.create("output/scPCA/objects")
+```
+
+``` {r}
+# Create seurat objects function
+create_sobj <- function(name) {
+  print(paste0("Running sample: ", name, "."))
+  # define paths
+  output.path <- paste("output/scPCA/objectsindividual", name, sep = "/")
+  dir <- paste(input.path, name, "outs", sep = "/")
+  mat.path <- paste(dir, "filtered_feature_bc_matrix", sep = "/")
+  
+  # read data
+  data <- Read10X(mat.path)
+  
+  # Create Seurat object
+  sobj <- CreateSeuratObject(
+    counts = data,
+    assay = 'RNA',
+    project = 'pediatric_cancer_atlas'
+  )
+  sample <- md[md$run == name,]
+  for (col in names(sample)) {
+    sobj@meta.data[,col] <- sample[,col][[1]]
+  }
+
+  # Save RDS of seurat object
+  output <- paste(output.path, ".RDS", sep = "")
+  saveRDS(object= sobj, file = output)
+  
+  print("RDS saved.")
+  return(sobj)
+
+}
+
+```
+
+
+```{r}
+sobj.list <- lapply(samples, create_sobj)
+sobj.list<- Filter(Negate(is.null), sobj.list)
+saveRDS(sobj.list, file = "output/scPCA/objects/sobj.list.RDS")
+print("All saved.")
+```
+
+
+## Cell Cycle Scoring
+```{r}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+```
+
+```{r}
+sobj.list <- lapply(sobj.list, function(sobj) {
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- NormalizeData(sobj)
+  sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+  sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+  return(sobj)
+})
+```
+
+```{r}
+saveRDS(sobj.list, "output/scPCA/sobj.listCCS.RDS")
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+saveRDS(sobj.merged, "output/scPCA/sobj.merged.RDS")
+```
+
+## Quality control Plots (individual)
+
+```{r}
+# Create Seurat object list split by sample (not by run)
+sobj.merged <- JoinLayers(sobj.merged)
+sobj.list <- SplitObject(sobj.merged, split.by = "sample_id")
+samples <- names(lapply(sobj.list, function(sobj){sobj$sample_id[[1]]}))
+names(sobj.list) <- samples
+```
+
+
+```{r}
+sobj_qc <-function(sobj) {
+  
+  # Takes in list of samples and generate quality control plots for each sample.
+  # store mitochondrial percentage in object meta data
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- PercentageFeatureSet(sobj, pattern = "MT-", col.name = "percent.mt")
+  name <- sobj$sample_id[1]
+  
+  # Create Violin plot
+  Vln.name <- paste("output/scPCA/objectsplots/QC", name, "violin_plot.pdf",  sep = "/")
+  ggsave(filename = Vln.name, 
+         plot = VlnPlot(
+           object = sobj,
+           features = c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score"),
+           pt.size = 0.1,
+           ncol = 3,
+         ),
+         units = "in",
+         height = 10,
+         width = 12,
+         create.dir = T
+  )
+  
+  ##############################################################################
+  # pre-processing and dimensional reduction on both assays independently, 
+  # using standard approaches for RNA and ATAC-seq data.
+  
+  # RNA analysis
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- sobj %>%
+    SCTransform(vst.flavor = 'v2') %>% # note: in Seurat v4, ‘v1’ is the default, in v5, ‘v2’ is default
+    RunPCA(reduction.name = "pca", reduction.key = "PCArna_") %>%
+    RunUMAP(reduction="pca", reduction.name = "umap.rna", reduction.key = "UMAPrna_", dims = 1:30) %>%
+    FindNeighbors(dims = 1:30)
+  
+  # test cluster resolution
+  sobj <- FindClusters(sobj, resolution=0.5)
+  DimPlot(sobj, label = TRUE)
+  
+  # Find markers using RNA assay
+  # find markers for every cluster compared to all remaining cells
+  DefaultAssay(sobj) <- "RNA"
+  markers.rna <- FindAllMarkers(sobj, only.pos = TRUE)
+  head(markers.rna)
+  
+  # Find variable features
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- FindVariableFeatures(sobj, selection.method = "vst", nfeatures = 2000)
+  # plot variable features 
+  LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE)
+  VarFeat.name <- paste("output/scPCA/plots/QC", name, "VariableFeatures.pdf",  sep = "/")
+  ggsave(VarFeat.name, 
+         plot = LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  # Feature plot with QC metrics
+  metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+  sobj_copy <- sobj
+  FeaturePlot(sobj_copy, 
+              features = metrics,
+              pt.size = 0.4,
+              label = TRUE,
+              reduction = "umap.rna"
+  )
+  
+  metric_featplot.name <- paste("output/scPCA/plots/QC", name, "metrics_features.pdf",  sep = "/")
+  ggsave(metric_featplot.name, 
+         plot =   FeaturePlot(sobj_copy, 
+                              features = metrics,
+                              pt.size = 0.4,
+                              label = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  
+  # Script to assign markers
+  
+  DefaultAssay(sobj) <- "SCT"
+  DimPlot(sobj, reduction = "umap.rna", 
+          group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP")
+  rna_umap.name <- paste("output/scPCA/plots/QC", name, "RNA_UMAP.pdf",  sep = "/")
+  ggsave(rna_umap.name, 
+         plot = DimPlot(sobj, reduction = "umap.rna", 
+                        group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP"),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  #top10 genes
+  # markers.sobj <- markers.rna
+  # markers.sobj %>%
+  #   group_by(cluster) %>%
+  #   dplyr::filter(avg_log2FC > 1) %>%
+  #   slice_head(n = 10) %>%
+  #   ungroup() -> top10
+  # DoHeatmap(sobj, features = top10$gene) + NoLegend()
+  # top10.name <- paste("/igm/projects/HD-BAT_Wedemeyer/output/scPCA/objectsplots/QC", name, "top10Heatmap.pdf", sep = "/")
+  # ggsave(top10.name,
+  #        plot = DoHeatmap(sobj, features = top10$gene) + NoLegend(),
+  #        units = "in",
+  #        width = 28,
+  #        height = 13)
+  
+  
+  # markers.rna %>%     
+  #   group_by(cluster) %>%
+  #   slice_head(n = 5) %>%
+  #   ungroup() -> top
+  # rna.list <- lapply(levels(sobj), function(cluster) {
+  #   cluster.markers <- markers.rna[which(markers.rna$cluster==cluster),"gene"]
+  # })
+  # names(rna.list) <- paste0("cluster", 0:(length(unique(sobj$seurat_clusters)) - 1))
+  return(sobj)
+}
+```
+
+```{r}
+# Run and save list
+sobj.list <- lapply(sobj.list, sobj_qc)
+names(sobj.list) <- samples
+saveRDS(sobj.list, "output/scPCA/objects/sobj.list.qc.RDS")
+
+```
+
+## Quality control plots (merged)
+
+```{r}
+DefaultAssay(sobj.merged) <- "RNA"
+sobj.merged <- PercentageFeatureSet(sobj.merged, pattern = "MT-", col.name = "percent.mt")
+
+metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+
+DefaultAssay(sobj.merged) <- "RNA"
+Vln.name <- "output/scPCA/plots/QC/violin_plot_merge.pdf"
+ggsave(filename = Vln.name, 
+       plot = VlnPlot(
+         object = sobj.merged,
+         features = metrics,
+         pt.size = 0.1,
+         
+       ),
+       units = "in",
+       height = 10,
+       width = 12
+)
+
+saveRDS(sobj.merged, "output/scPCA/objects/sobj.merged.qc.RDS")
+```
+
+```{r}
+# rename merged object and remove the list
+sobj <- sobj.merged
+rm(sobj.merged)
+rm(sobj.list)
+```
+
+
+```{r}
+samples <- sobj$sample_id %>% unique()
+data.frame(sample_names = samples) %>% write.csv(.,file = "output/scPCA/samples.csv")
+```
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+```{bash}
+# make genes folder
+mkdir data/counts/pediatric_cancer/genes
+
+for d in data/counts/pediatric_cancer/*; 
+  do 
+    name="${d:60:11}"
+    gunzip -c data/counts/pediatric_cancer/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  > data/counts/pediatric_cancer/genes/"$name"_features.tsv
+  done
+```
+
+Then we run scrublet in python before running the script (code/scrub.py).
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="output/scPCA/samples.csv"
+input_dir="data/counts/pediatric_cancer/"
+output_dir="output/scPCA/objects/scrub/"
+gene_dir="data/counts/pediatric_cancer/genes/"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+Back to R to add doublet score to metadata.
+```{r}
+sobj <- readRDS("output/scPCA/objects/sobj.merged.qc.RDS")
+# Get doublet scores
+sobj@meta.data$doublet_score <- "0"
+for (sample in unique(sobj$run)) {
+  pscrub <- read_table(paste0("scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  sobj@meta.data[sobj@meta.data$run == sample, "doublet_score"] <- pscrub$X1
+}
+sobj@meta.data$Predicted_Doublets <- ifelse(sobj$doublet_score > 0.25, "Doublet","Singlet" )
+table(sobj@meta.data$Predicted_Doublets)
+```
+## QC Cutoff
+
+```{r}
+# Assign QC cutoffs and subset
+sobj2<-sobj
+sobj2 <- subset(sobj2,
+                subset =
+                  nFeature_RNA < 5000 &
+                  nCount_RNA < 30000 &
+                  Predicted_Doublets == "Singlet")
+# See how mant cells remain
+print(paste0("Number of cells before QC: ", dim(sobj)[2], "."))
+print(paste0("Number of cells after QC: ", dim(sobj2)[2], "."))
+
+```
+
+``` {r}
+# save qc'd object
+saveRDS(sobj2, "output/scPCA/objectsobjects/cancer.qc.RDS")
+sobj <- sobj2
+rm(sobj2)
+```
+
+## NCH tumor sample
+
+```{r}
+# create vector of sample names
+samples <-"JL12_T"
+```
+
+## Create Seurat Objects for each sample
+### save Seurat objects as individual RDS files
+
+``` {r}
+# set file paths
+input.path <- "data/counts"
+
+```
+
+``` {r}
+# Create seurat objects function
+create_sobj <- function(name) {
+  print(paste0("Running sample: ", name, "."))
+  # define paths
+  output.path <- paste("objects/JL12/objects/individual", name, sep = "/")
+  dir <- paste(input.path, name, "JL12","outs", sep = "/")
+  mat.path <- paste(dir, "filtered_feature_bc_matrix", sep = "/")
+  
+  # read data
+  data <- Read10X(mat.path)
+  
+  # Create Seurat object
+  sobj <- CreateSeuratObject(
+    counts = data,
+    assay = 'RNA',
+    project = 'JL12'
+  )
+  # sample <- md[md$run == name,]
+  # for (col in names(sample)) {
+  #   sobj@meta.data[,col] <- sample[,col][[1]]
+  # }
+
+  # Save RDS of seurat object
+  output <- paste(output.path, ".RDS", sep = "")
+  saveRDS(object= sobj, file = output)
+  
+  print("RDS saved.")
+  return(sobj)
+
+}
+
+```
+
+
+```{r}
+sobj<-create_sobj(sample)
+## Add metadata later since this is just one sample
+```
+
+
+## Cell Cycle Scoring
+```{r}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+```
+
+```{r}
+DefaultAssay(sobj) <- "RNA"
+sobj <- NormalizeData(sobj)
+sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+```
+
+```{r}
+saveRDS(sobj, "objects/JL12/sobj.CCS.RDS")
+```
+
+## Quality control Plots
+
+```{r}
+sobj_qc <-function(sobj) {
+  
+  # Takes in list of samples and generate quality control plots for each sample.
+  # store mitochondrial percentage in object meta data
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- PercentageFeatureSet(sobj, pattern = "MT-", col.name = "percent.mt")
+  name <- sobj$sample_id[1]
+  
+  # Create Violin plot
+  Vln.name <- paste("objects/JL12/plots/QC", name, "violin_plot.pdf",  sep = "/")
+  ggsave(filename = Vln.name, 
+         plot = VlnPlot(
+           object = sobj,
+           features = c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score"),
+           pt.size = 0.1,
+           ncol = 3,
+         ),
+         units = "in",
+         height = 10,
+         width = 12,
+         create.dir = T
+  )
+  
+  ##############################################################################
+  # pre-processing and dimensional reduction on both assays independently, 
+  # using standard approaches for RNA and ATAC-seq data.
+  
+  # RNA analysis
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- sobj %>%
+    SCTransform(vst.flavor = 'v2') %>% # note: in Seurat v4, ‘v1’ is the default, in v5, ‘v2’ is default
+    RunPCA(reduction.name = "pca", reduction.key = "PCArna_") %>%
+    RunUMAP(reduction="pca", reduction.name = "umap.rna", reduction.key = "UMAPrna_", dims = 1:30) %>%
+    FindNeighbors(dims = 1:30)
+  
+  # test cluster resolution
+  sobj <- FindClusters(sobj, resolution=0.5)
+  DimPlot(sobj, label = TRUE)
+  
+  # Find markers using RNA assay
+  # find markers for every cluster compared to all remaining cells
+  DefaultAssay(sobj) <- "RNA"
+  markers.rna <- FindAllMarkers(sobj, only.pos = TRUE)
+  head(markers.rna)
+  
+  # Find variable features
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- FindVariableFeatures(sobj, selection.method = "vst", nfeatures = 2000)
+  # plot variable features 
+  LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE)
+  VarFeat.name <- paste("objects/JL12/plots/QC", name, "VariableFeatures.pdf",  sep = "/")
+  ggsave(VarFeat.name, 
+         plot = LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  # Feature plot with QC metrics
+  metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+  sobj_copy <- sobj
+  FeaturePlot(sobj_copy, 
+              features = metrics,
+              pt.size = 0.4,
+              label = TRUE,
+              reduction = "umap.rna"
+  )
+  
+  metric_featplot.name <- paste("objects/JL12/plots/QC", name, "metrics_features.pdf",  sep = "/")
+  ggsave(metric_featplot.name, 
+         plot =   FeaturePlot(sobj_copy, 
+                              features = metrics,
+                              pt.size = 0.4,
+                              label = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  
+  # Script to assign markers
+  
+  DefaultAssay(sobj) <- "SCT"
+  DimPlot(sobj, reduction = "umap.rna", 
+          group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP")
+  rna_umap.name <- paste("objects/JL12/plots/QC", name, "RNA_UMAP.pdf",  sep = "/")
+  ggsave(rna_umap.name, 
+         plot = DimPlot(sobj, reduction = "umap.rna", 
+                        group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP"),
+         units = "in",
+         height = 8.5,
+         width = 11)
+
+  return(sobj)
+}
+```
+
+
+## Quality control plots (merged)
+
+```{r}
+DefaultAssay(sobj.merged) <- "RNA"
+sobj.merged <- PercentageFeatureSet(sobj.merged, pattern = "MT-", col.name = "percent.mt")
+
+metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+
+DefaultAssay(sobj.merged) <- "RNA"
+Vln.name <- "plots/QC/violin_plot_merge.pdf"
+ggsave(filename = Vln.name, 
+       plot = VlnPlot(
+         object = sobj.merged,
+         features = metrics,
+         pt.size = 0.1,
+         
+       ),
+       units = "in",
+       height = 10,
+       width = 12
+)
+
+saveRDS(sobj.merged, "output/scPCA/objects/sobj.merged.qc.RDS")
+```
+
+```{r}
+# rename merged object and remove the list
+sobj <- sobj.merged
+rm(sobj.merged)
+rm(sobj.list)
+```
+
+```{r}
+samples <- sobj$sample_id %>% unique()
+data.frame(sample_names = samples) %>% write.csv(.,file = "output/JL12/samples.csv")
+```
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+```{bash}
+# make genes folder
+mkdir /igm/projects/HD-BAT_Wedemeyer/counts/JL12_T/genes
+
+
+gunzip -c data/counts/JL12_T/JL12_N/outs/filtered_feature_bc_matrix/features.tsv.gz  > data/counts/JL12_T/genes/JL12_T_features.tsv
+
+```
+
+Then we run scrublet in python. Be sure to source the conda environment to use before running the script.
+Then we run scrublet in python before running the script (code/scrub.py).
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="objects/JL12/samples.csv"
+input_dir="data/counts/JL12/"
+output_dir="objects/JL12/scrub/"
+gene_dir="data/counts/JL12/genes/"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+
+Back to R to add doublet scote to metadata.
+```{r}
+#sobj <- readRDS("/igm/projects/HD-BAT_Wedemeyer/objects/JL12/objects/sobj.merged.qc.RDS")
+# Get doublet scores
+sobj@meta.data$doublet_score <- "0"
+for (sample in unique(sobj$sample_id)) {
+  pscrub <- read_table(paste0("scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  sobj@meta.data[sobj@meta.data$sample_id == sample, "doublet_score"] <- pscrub$X1
+}
+sobj@meta.data$Predicted_Doublets <- ifelse(sobj$doublet_score > 0.25, "Doublet","Singlet" )
+table(sobj@meta.data$Predicted_Doublets)
+```
+## QC Cutoff
+
+```{r}
+# Assign QC cutoffs and subset
+sobj2<-sobj
+sobj2 <- subset(sobj2,
+                subset =
+                  nFeature_RNA < 5000 &
+                  nCount_RNA < 30000 &
+                  percent.mt < 20 &
+                  Predicted_Doublets == "Singlet")
+# See how mant cells remain
+print(paste0("Number of cells before QC: ", dim(sobj)[2], "."))
+print(paste0("Number of cells after QC: ", dim(sobj2)[2], "."))
+
+```
+
+``` {r}
+# save qc'd object
+saveRDS(sobj2, "output/JL12/objects/jl12.qc.RDS")
+sobj <- sobj2
+rm(sobj2)
+```
+
+# Merge Tumor samples
+```{r}
+jl12 <- readRDS("output/JL12/objects/jl12.qc.RDS")
+cancer <- readRDS("output/scPCA/objects/cancer.qc.RDS")
+```
+
+```{r}
+sobj.list<-list(jl12,cancer)
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+```
+
+```{r}
+saveRDS(sobj.merged,"output/mapping/cancer.RDS")
+```
+
+# MS
+
+```{r}
+# create list of sample names
+samples <- list.dirs(path = "data/counts/MS", 
+                     full.names = F, 
+                     recursive = F)
+samples <- samples[1:(length(samples)-1)]
+```
+
+## Create Seurat Objects for each sample
+### save Seurat objects as individual RDS files
+
+```{r}
+# set file paths
+input.path <- "data/counts/MS"
+md <- read.csv("data/ms_meta.csv", row.names = 1)
+
+md<-md[,c("Sample.Name","AGE", "lesion", "source_name")]
+names(md) <- c("sample_id", "age", "lesion", "tissue")
+
+md <- unique(md)
+rownames(md) <- md$sample_id
+
+```
+
+```{r}
+sobj.list <- lapply(samples, function(name) {
+  output.path <- paste("output/MS/objects/individual", name, sep = "/")
+  dir <- paste(input.path, name, "outs", sep = "/")
+  mat.path <- paste(dir, "filtered_feature_bc_matrix", sep = "/")
+  data <- Read10X(mat.path)
+  # Create Seurat object
+  sobj <- CreateSeuratObject(
+    counts = data,
+    assay = 'RNA',
+    project = 'MS'
+  )
+  # add metadata
+  sample <- md[name,]
+  for (col in names(sample)) {
+    sobj@meta.data[,col] <- sample[,col][[1]]
+  }
+  
+  # Save RDS of seurat object
+  output <- paste(output.path, ".RDS", sep = "")
+  saveRDS(object= sobj, file = output)
+  
+  message("RDS saved.")
+  return(sobj)
+})
+```
+
+```{r}
+names(sobj.list) <-samples
+saveRDS(sobj.list, file = "output/MS/objects/sobj.list.RDS")
+```
+
+## Cell Cycle Scoring
+```{r}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+```
+
+```{r}
+sobj.list <- lapply(sobj.list, function(sobj) {
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- NormalizeData(sobj)
+  sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+  sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+  return(sobj)
+})
+```
+
+```{r}
+saveRDS(sobj.list, "output/MS/objects/sobj.listCCS.RDS")
+sobj.merged <- merge(sobj.list[[1]], sobj.list[2:length(sobj.list)])
+sobj.merged <- JoinLayers(sobj.merged)
+saveRDS(sobj.merged, "output/MS/objects/sobj.merged.RDS")
+```
+
+
+## Quality control Plots (individual)
+
+```{r}
+sobj_qc <-function(sobj,out) {
+  
+  # Takes in list of samples and generate quality control plots for each sample.
+  # store mitochondrial percentage in object meta data
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- PercentageFeatureSet(sobj, pattern = "MT-", col.name = "percent.mt")
+  name <- sobj$sample_id[1]
+  
+  # Create Violin plot
+  Vln.name <- paste(out, name, "violin_plot.pdf",  sep = "/")
+  ggsave(filename = Vln.name, 
+         plot = VlnPlot(
+           object = sobj,
+           features = c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score"),
+           pt.size = 0.1,
+           ncol = 3,
+         ),
+         units = "in",
+         height = 10,
+         width = 12,
+         create.dir = T
+  )
+  
+  ##############################################################################
+  # pre-processing and dimensional reduction on both assays independently, 
+  # using standard approaches for RNA and ATAC-seq data.
+  
+  # RNA analysis
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- sobj %>%
+    SCTransform(vst.flavor = 'v2') %>% # note: in Seurat v4, ‘v1’ is the default, in v5, ‘v2’ is default
+    RunPCA(reduction.name = "pca", reduction.key = "PCArna_") %>%
+    RunUMAP(reduction="pca", reduction.name = "umap.rna", reduction.key = "UMAPrna_", dims = 1:30) %>%
+    FindNeighbors(dims = 1:30)
+  
+  # test cluster resolution
+  sobj <- FindClusters(sobj, resolution=0.5)
+  DimPlot(sobj, label = TRUE)
+  
+  # Find markers using RNA assay
+  # find markers for every cluster compared to all remaining cells
+  DefaultAssay(sobj) <- "RNA"
+  markers.rna <- FindAllMarkers(sobj, only.pos = TRUE)
+  head(markers.rna)
+  
+  # Find variable features
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- FindVariableFeatures(sobj, selection.method = "vst", nfeatures = 2000)
+  # plot variable features 
+  LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE)
+  VarFeat.name <- paste(out, name, "VariableFeatures.pdf",  sep = "/")
+  ggsave(VarFeat.name, 
+         plot = LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  # Feature plot with QC metrics
+  metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+  sobj_copy <- sobj
+  FeaturePlot(sobj_copy, 
+              features = metrics,
+              pt.size = 0.4,
+              label = TRUE,
+              reduction = "umap.rna"
+  )
+  
+  metric_featplot.name <- paste(out, name, "metrics_features.pdf",  sep = "/")
+  ggsave(metric_featplot.name, 
+         plot =   FeaturePlot(sobj_copy, 
+                              features = metrics,
+                              pt.size = 0.4,
+                              label = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  
+  # Script to assign markers
+  
+  DefaultAssay(sobj) <- "SCT"
+  DimPlot(sobj, reduction = "umap.rna", 
+          group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP")
+  rna_umap.name <- paste(out, name, "RNA_UMAP.pdf",  sep = "/")
+  ggsave(rna_umap.name, 
+         plot = DimPlot(sobj, reduction = "umap.rna", 
+                        group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP"),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  #top10 genes
+  # markers.sobj <- markers.rna
+  # markers.sobj %>%
+  #   group_by(cluster) %>%
+  #   dplyr::filter(avg_log2FC > 1) %>%
+  #   slice_head(n = 10) %>%
+  #   ungroup() -> top10
+  # DoHeatmap(sobj, features = top10$gene) + NoLegend()
+  # top10.name <- paste(out, name, "top10Heatmap.pdf", sep = "/")
+  # ggsave(top10.name,
+  #        plot = DoHeatmap(sobj, features = top10$gene) + NoLegend(),
+  #        units = "in",
+  #        width = 28,
+  #        height = 13)
+  
+  
+  # markers.rna %>%     
+  #   group_by(cluster) %>%
+  #   slice_head(n = 5) %>%
+  #   ungroup() -> top
+  # rna.list <- lapply(levels(sobj), function(cluster) {
+  #   cluster.markers <- markers.rna[which(markers.rna$cluster==cluster),"gene"]
+  # })
+  # names(rna.list) <- paste0("cluster", 0:(length(unique(sobj$seurat_clusters)) - 1))
+  return(sobj)
+}
+```
+
+```{r}
+# Run and save list
+options(future.globals.maxSize= 629145600)
+sobj.list <- lapply(sobj.list, sobj_qc, out= "output/MS/plots/QC")
+names(sobj.list) <- md$sample_id
+saveRDS(sobj.list, "output/MS/objects/sobj.list.qc.RDS")
+
+```
+
+## Quality control plots (merged)
+
+```{r}
+DefaultAssay(sobj.merged) <- "RNA"
+sobj.merged <- PercentageFeatureSet(sobj.merged, pattern = "MT-", col.name = "percent.mt")
+
+metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+
+DefaultAssay(sobj.merged) <- "RNA"
+Vln.name <- "output/MS/plots/QC/violin_plot_merge.pdf"
+ggsave(filename = Vln.name, 
+       plot = VlnPlot(
+         object = sobj.merged,
+         features = metrics,
+         pt.size = 0.1,
+         
+       ),
+       units = "in",
+       height = 10,
+       width = 12
+)
+
+saveRDS(sobj.merged, "output/MS/objects/sobj.merged.qc.RDS")
+```
+
+```{r}
+# rename merged object and remove the list
+sobj <- sobj.merged
+rm(sobj.merged)
+rm(sobj.list)
+```
+
+## Scrublet
+
+First, we create a samples.csv.
+
+```{r}
+data.frame(sample_names = samples) %>% write.csv(.,file = "output/MS/samples.csv")
+```
+
+```{r}
+samples <- sobj$sample_id %>% unique()
+data.frame(sample_names = samples) %>% write.csv(.,file = "output/scPCA/samples.csv")
+```
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+```{bash}
+# make genes folder
+mkdir data/counts/MS/genes
+
+for d in data/counts/MS/*; 
+  do 
+    gunzip -c data/counts/MS/"$name"/outs/filtered_feature_bc_matrix/features.tsv.gz  > data/counts/MS/genes/"$name"_features.tsv
+  done
+```
+
+Then we run scrublet in python before running the script (code/scrub.py).
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="output/MS/samples.csv"
+input_dir="data/counts/MS/"
+output_dir="output/MS/objects/scrub/"
+gene_dir="data/MS/pediatric_cancer/genes/"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+Back to R to add doublet score to metadata.
+```{r}
+# Get doublet scores
+sobj@meta.data$doublet_score <- "0"
+for (sample in samples) {
+  pscrub <- read_table(paste0("scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  sobj@meta.data[sobj@meta.data$sample_id== sample, "doublet_score"] <- pscrub$X1
+}
+sobj@meta.data$Predicted_Doublets <- ifelse(sobj$doublet_score > 0.25, "Doublet","Singlet" )
+table(sobj@meta.data$Predicted_Doublets)
+
+saveRDS(sobj,"output/MS/objects/sobj.metrics.rds")
+```
+
+# Assign QC cutoffs and subset
+
+```{r}
+dim(sobj) # [1] 59462 55196
+sobj <- subset(sobj,
+               subset = 
+                 nFeature_RNA < 6000 &
+                 nCount_RNA < 30000 &
+                 percent.mt < 20 &
+                 Predicted_Doublets == "Singlet")
+dim(sobj) # [1] 59462  52856
+```
+
+```{r}
+# save file 
+saveRDS(sobj,"objects/mapping/ms.rds")
+```
+
+# Dropseq (follow steps in https://www.nature.com/articles/s41467-021-20892-3)
+```{r}
+# create list of sample names
+dropseq.samples <- list.files(path = "data/counts/jh_dropseq/dropseq/") %>% 
+  gsub(".dge.txt.gz", "", .) %>%
+  gsub(".dge.summary.txt", "", .) %>% 
+  unique()
+```
+
+## Create Seurat Objects for each sample
+### save Seurat objects as individual RDS files
+
+```{r}
+# set file paths
+input.path <- "data/counts/jh_dropseq/dropseq/"
+md <- read.csv("data/meta/ds_meta.txt", row.names = 1)
+
+md<-md[,c("Sample.Name","AGE", "cell_type", "source_name")]
+names(md) <- c("sample_id", "age", "cell_type_orig", "source_name")
+```
+
+```{r}
+dropseq.list <- lapply(dropseq.samples, function(name) {
+  output.path <- paste("output/jh_dropseq/objects/individual", name, sep = "/")
+  # get path
+  mat.path <- paste0(input.path, name, ".dge.txt.gz")
+  # get dge
+  dge <- read.delim(file = mat.path, row.names = 1)
+  # Create Seurat object
+  sobj <- CreateSeuratObject(
+    counts = dge,
+    assay = 'RNA',
+    project = 'dropseq'
+  )
+  # add metadata
+  sample <- md[name,]
+  for (col in names(sample)) {
+    sobj@meta.data[,col] <- sample[,col][[1]]
+  }
+  
+  # Save RDS of seurat object
+  output <- paste(output.path, ".RDS", sep = "")
+  saveRDS(object= sobj, file = output)
+  
+  print("RDS saved.")
+  return(sobj)
+})
+```
+```{r}
+names(dropseq.list) <- md$sample_id
+saveRDS(dropseq.list, file = "output/jh_dropseq/objects/dropseq.list.RDS")
+```
+
+## Cell Cycle Scoring
+```{r}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+```
+
+```{r}
+dropseq.list <- lapply(dropseq.list, function(sobj) {
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- NormalizeData(sobj)
+  sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+  sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+  return(sobj)
+})
+```
+
+```{r}
+saveRDS(dropseq.list, "output/jh_dropseq/objects/dropseq.listCCS.RDS")
+dropseq.merged <- merge(dropseq.list[[1]], dropseq.list[2:length(dropseq.list)])
+dropseq.merged <- JoinLayers(dropseq.merged)
+saveRDS(dropseq.merged, "output/jh_dropseq/objects/dropseq.merged.RDS")
+```
+
+
+## Quality control Plots (individual)
+
+```{r}
+sobj_qc <-function(sobj,out) {
+  
+  # Takes in list of samples and generate quality control plots for each sample.
+  # store mitochondrial percentage in object meta data
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- PercentageFeatureSet(sobj, pattern = "MT-", col.name = "percent.mt")
+  name <- sobj$sample_id[1]
+  
+  # Create Violin plot
+  Vln.name <- paste(out, name, "violin_plot.pdf",  sep = "/")
+  ggsave(filename = Vln.name, 
+         plot = VlnPlot(
+           object = sobj,
+           features = c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score"),
+           pt.size = 0.1,
+           ncol = 3,
+         ),
+         units = "in",
+         height = 10,
+         width = 12,
+         create.dir = T
+  )
+  
+  ##############################################################################
+  # pre-processing and dimensional reduction on both assays independently, 
+  # using standard approaches for RNA and ATAC-seq data.
+  
+  # RNA analysis
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- sobj %>%
+    SCTransform(vst.flavor = 'v2') %>% # note: in Seurat v4, ‘v1’ is the default, in v5, ‘v2’ is default
+    RunPCA(reduction.name = "pca", reduction.key = "PCArna_") %>%
+    RunUMAP(reduction="pca", reduction.name = "umap.rna", reduction.key = "UMAPrna_", dims = 1:30) %>%
+    FindNeighbors(dims = 1:30)
+  
+  # test cluster resolution
+  sobj <- FindClusters(sobj, resolution=0.5)
+  DimPlot(sobj, label = TRUE)
+  
+  # Find markers using RNA assay
+  # find markers for every cluster compared to all remaining cells
+  DefaultAssay(sobj) <- "RNA"
+  markers.rna <- FindAllMarkers(sobj, only.pos = TRUE)
+  head(markers.rna)
+  
+  # Find variable features
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- FindVariableFeatures(sobj, selection.method = "vst", nfeatures = 2000)
+  # plot variable features 
+  LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE)
+  VarFeat.name <- paste(out, name, "VariableFeatures.pdf",  sep = "/")
+  ggsave(VarFeat.name, 
+         plot = LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  # Feature plot with QC metrics
+  metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+  sobj_copy <- sobj
+  FeaturePlot(sobj_copy, 
+              features = metrics,
+              pt.size = 0.4,
+              label = TRUE,
+              reduction = "umap.rna"
+  )
+  
+  metric_featplot.name <- paste(out, name, "metrics_features.pdf",  sep = "/")
+  ggsave(metric_featplot.name, 
+         plot =   FeaturePlot(sobj_copy, 
+                              features = metrics,
+                              pt.size = 0.4,
+                              label = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  
+  # Script to assign markers
+  
+  DefaultAssay(sobj) <- "SCT"
+  DimPlot(sobj, reduction = "umap.rna", 
+          group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP")
+  rna_umap.name <- paste(out, name, "RNA_UMAP.pdf",  sep = "/")
+  ggsave(rna_umap.name, 
+         plot = DimPlot(sobj, reduction = "umap.rna", 
+                        group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP"),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  
+  return(sobj)
+}
+```
+
+```{r}
+# Run and save list
+sobj.list <- lapply(dropseq.list, sobj_qc, out= "output/jh_dropseq/plots/QC")
+names(dropseq.list) <- md$sample_id
+saveRDS(dropseq.list, "output/jh_dropseq/objects/dropseq.list.qc.RDS")
+
+```
+
+## Quality control plots (merged)
+
+```{r}
+DefaultAssay(dropseq.merged) <- "RNA"
+dropseq.merged <- PercentageFeatureSet(dropseq.merged, pattern = "MT-", col.name = "percent.mt")
+
+metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+
+DefaultAssay(dropseq.merged) <- "RNA"
+Vln.name <- "output/jh_dropseq/plots/QC/violin_plot_merge.pdf"
+ggsave(filename = Vln.name, 
+       plot = VlnPlot(
+         object = dropseq.merged,
+         features = metrics,
+         pt.size = 0.1,
+         
+       ),
+       units = "in",
+       height = 10,
+       width = 12
+)
+
+saveRDS(dropseq.merged, "objects/dropseq.merged.qc.RDS")
+```
+
+```{r}
+# rename merged object and remove the list
+dropseq <- dropseq.merged
+rm(dropseq.merged)
+rm(dropseq.list)
+```
+
+# 10X Genomics Single Cell
+```{r}
+# create list of sample names
+cellranger.samples  <- list.dirs(path = "data/counts/jh_dropseq/cellranger/", 
+                     full.names = F, 
+                     recursive = F)
+```
+
+## Create Seurat Objects for each sample
+### save Seurat objects as individual RDS files
+
+```{r}
+# set file paths
+input.path <- "data/counts/jh_dropseq/cellranger"
+md <- read.csv("data/meta/ds_meta10X.txt", row.names = 1)
+
+md<-md[,c("Sample.Name","AGE", "cell_type", "source_name")]
+names(md) <- c("sample_id", "age", "cell_type_orig", "source_name")
+rownames(md) <- samples[c(2,1)]
+```
+
+```{r}
+cellranger.list <- lapply(cellranger.samples, function(name) {
+  output.path <- paste("objects/individual", name, sep = "/")
+  dir <- paste(input.path, name, "outs", sep = "/")
+  mat.path <- paste(dir, "filtered_feature_bc_matrix", sep = "/")
+  data <- Read10X(mat.path)
+  # Create Seurat object
+  sobj <- CreateSeuratObject(
+    counts = data,
+    assay = 'RNA',
+    project = 'cellranger'
+  )
+  # add metadata
+  sample <- md[name,]
+  for (col in names(sample)) {
+    sobj@meta.data[,col] <- sample[,col][[1]]
+  }
+  
+  # Save RDS of seurat object
+  output <- paste(output.path, ".RDS", sep = "")
+  saveRDS(object= sobj, file = output)
+  
+  print("RDS saved.")
+  return(sobj)
+})
+```
+
+```{r}
+names(cellranger.list) <- md$sample_id
+saveRDS(cellranger.list, file = "output/jh_dropseq/objects/cellranger.list.RDS")
+```
+
+## Cell Cycle Scoring
+```{r}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+```
+
+```{r}
+cellranger.list <- lapply(cellranger.list, function(sobj) {
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- NormalizeData(sobj)
+  sobj <- CellCycleScoring(sobj, s.features = s.genes, g2m.features = g2m.genes)
+  sobj$CC.Difference <- sobj$S.Score - sobj$G2M.Score
+  return(sobj)
+})
+```
+
+```{r}
+saveRDS(cellranger.list, "objects/cellranger.listCCS.RDS")
+cellranger.merged <- merge(cellranger.list[[1]], cellranger.list[2:length(cellranger.list)])
+cellranger.merged <- JoinLayers(cellranger.merged)
+saveRDS(cellranger.merged, "objects/cellranger.merged.RDS")
+```
+
+
+## Quality control Plots (individual)
+
+```{r}
+sobj_qc <-function(sobj,out) {
+  
+  # Takes in list of samples and generate quality control plots for each sample.
+  # store mitochondrial percentage in object meta data
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- PercentageFeatureSet(sobj, pattern = "MT-", col.name = "percent.mt")
+  name <- sobj$sample_id[1]
+  
+  # Create Violin plot
+  Vln.name <- paste(out, name, "violin_plot.pdf",  sep = "/")
+  ggsave(filename = Vln.name, 
+         plot = VlnPlot(
+           object = sobj,
+           features = c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score"),
+           pt.size = 0.1,
+           ncol = 3,
+         ),
+         units = "in",
+         height = 10,
+         width = 12,
+         create.dir = T
+  )
+  
+  ##############################################################################
+  # pre-processing and dimensional reduction on both assays independently, 
+  # using standard approaches for RNA and ATAC-seq data.
+  
+  # RNA analysis
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- sobj %>%
+    SCTransform(vst.flavor = 'v2') %>% # note: in Seurat v4, ‘v1’ is the default, in v5, ‘v2’ is default
+    RunPCA(reduction.name = "pca", reduction.key = "PCArna_") %>%
+    RunUMAP(reduction="pca", reduction.name = "umap.rna", reduction.key = "UMAPrna_", dims = 1:30) %>%
+    FindNeighbors(dims = 1:30)
+  
+  # test cluster resolution
+  sobj <- FindClusters(sobj, resolution=0.5)
+  DimPlot(sobj, label = TRUE)
+  
+  # Find markers using RNA assay
+  # find markers for every cluster compared to all remaining cells
+  DefaultAssay(sobj) <- "RNA"
+  markers.rna <- FindAllMarkers(sobj, only.pos = TRUE)
+  head(markers.rna)
+  
+  # Find variable features
+  DefaultAssay(sobj) <- "RNA"
+  sobj <- FindVariableFeatures(sobj, selection.method = "vst", nfeatures = 2000)
+  # plot variable features 
+  LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE)
+  VarFeat.name <- paste(out, name, "VariableFeatures.pdf",  sep = "/")
+  ggsave(VarFeat.name, 
+         plot = LabelPoints(VariableFeaturePlot(sobj), points = head(VariableFeatures(sobj), 10), repel = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  # Feature plot with QC metrics
+  metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+  sobj_copy <- sobj
+  FeaturePlot(sobj_copy, 
+              features = metrics,
+              pt.size = 0.4,
+              label = TRUE,
+              reduction = "umap.rna"
+  )
+  
+  metric_featplot.name <- paste(out, name, "metrics_features.pdf",  sep = "/")
+  ggsave(metric_featplot.name, 
+         plot =   FeaturePlot(sobj_copy, 
+                              features = metrics,
+                              pt.size = 0.4,
+                              label = TRUE),
+         units = "in",
+         height = 8.5,
+         width = 11)
+  
+  
+  # Script to assign markers
+  
+  DefaultAssay(sobj) <- "SCT"
+  DimPlot(sobj, reduction = "umap.rna", 
+          group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP")
+  rna_umap.name <- paste(out, name, "RNA_UMAP.pdf",  sep = "/")
+  ggsave(rna_umap.name, 
+         plot = DimPlot(sobj, reduction = "umap.rna", 
+                        group.by = "seurat_clusters", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA_UMAP"),
+         units = "in",
+         height = 8.5,
+         width = 11)
+
+  return(sobj)
+}
+```
+
+```{r}
+# Run and save list
+options(future.globals.maxSize= 629145600)
+sobj.list <- lapply(cellranger.list, sobj_qc, out= "output/jh_dropseq/plots/QC")
+names(cellranger.list) <- md$sample_id
+saveRDS(cellranger.list, "jh_dropseq/objects/cellranger.list.qc.RDS")
+
+```
+
+## Quality control plots (merged)
+
+```{r}
+DefaultAssay(cellranger.merged) <- "RNA"
+cellranger.merged <- PercentageFeatureSet(cellranger.merged, pattern = "MT-", col.name = "percent.mt")
+
+metrics <- c("nFeature_RNA","nCount_RNA","percent.mt", "CC.Difference", "S.Score", "G2M.Score")
+
+DefaultAssay(cellranger.merged) <- "RNA"
+Vln.name <- "output/jh_dropseq/plots/QC/cr_violin_plot_merge.pdf"
+ggsave(filename = Vln.name, 
+       plot = VlnPlot(
+         object = cellranger.merged,
+         features = metrics,
+         pt.size = 0.1,
+         
+       ),
+       units = "in",
+       height = 10,
+       width = 12
+)
+
+saveRDS(cellranger.merged, "output/jh_dropseq/cellranger.merged.qc.RDS")
+```
+
+```{r}
+# rename merged object and remove the list
+cellranger <- cellranger.merged
+rm(cellranger.merged)
+rm(cellranger.list)
+```
+
+## Scrublet
+
+Next, create a samples.csv file
+```{r}
+data.frame(sample_names = c("d85_OPC","iPSC")) %>% write.csv(.,file = "output/jh_dropseq/samples.csv")
+```
+
+Then we run scrublet in python. Be sure to source the conda environment to use before running the script.
+
+```{r}
+samples <- sobj$sample_id %>% unique()
+data.frame(sample_names = samples) %>% write.csv(.,file = "output/scPCA/samples.csv")
+```
+
+## Scrublet
+
+First, we create a directory full of the features (genes) tab separated value files.
+Then we run scrublet in python before running the script (code/scrub.py).
+```{bash}
+# run scrublet
+# samples.csv is a column of sample names
+sample_dir="output/jh_dropseq/samples.csv"
+input_dir="data/counts/jh_dropseq/cellranger/"
+output_dir="output/jh_dropseq/scrub/"
+gene_dir="output/jh_dropseq/genes/"
+
+python scrub.py "$sample_dir" "$input_dir" "$output_dir" "$gene_dir"
+```
+
+
+Back to R to add doublet score to metadata.
+```{r}
+# Get doublet scores
+cellranger@meta.data$doublet_score <- "0"
+cellranger@meta.data$sample_id %>% unique()
+cellranger$sample_name <- ifelse(cellranger@meta.data$sample_id == "GSM4983787", yes = "d85_OPC", no= "iPSC")
+for (sample in cellranger.samples) {
+  pscrub <- read_table(paste0("scrub/", sample, "_doublet_scores.txt"),col_names = F)
+  
+  cellranger@meta.data[cellranger@meta.data$sample_name == sample, "doublet_score"] <- pscrub$X1
+}
+cellranger@meta.data$Predicted_Doublets <- ifelse(cellranger$doublet_score > 0.25, "Doublet","Singlet" )
+table(cellranger@meta.data$Predicted_Doublets)
+
+saveRDS(cellranger,"objects/merged/cellranger.metrics.rds")
+```
+
+# Assign QC cutoffs and subset
+
+## Dropseq
+
+```{r}
+dim(dropseq) # [1] 22088   900
+dropseq <- subset(dropseq,
+               subset = 
+                 nFeature_RNA < 5000 &
+                 nCount_RNA < 30000 &
+                 percent.mt < 20)
+dim(dropseq) # [1] 22088   882
+```
+
+## 10X Genomics single cell
+```{r}
+dim(cellranger) # [1] 59462  9002
+cellranger <- subset(cellranger,
+               subset = 
+                 nFeature_RNA < 6000 &
+                 nCount_RNA < 30000 &
+                 percent.mt < 20 &
+                 Predicted_Doublets == "Singlet")
+dim(cellranger) # [1] 59462  8073
+```
+
+```{r}
+jh_dropseq <- merge(dropseq,cellranger)
+jh_dropseq <- JoinLayers(jh_dropseq)
+saveRDS(jh_dropseq, "output/jh_dropseq/objects/sobj.merged.qc.RDS")
+```

@@ -1,0 +1,710 @@
+---
+title: "Figure 7"
+author: "Gary Schweickart"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r setup}
+# Load packages
+library(GenomeInfoDb)
+library(Matrix)
+library(Signac)
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(readxl)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(JASPAR2020) 
+library(TFBSTools)
+library(gridExtra)
+library(openxlsx)
+library(harmony)
+```
+
+```{r set colors}
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Fetal Neuronal Progenitor" = "#808000", "Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f", "Postnatal Glial Progenitor" = "#D2691E", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+ 
+
+#to assgin color to each age group
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+subtypecolor <- c("Ependymal" = "#000000","Fetal Ependymal" = "#36454F", "ROBO2 Radial Glia" = "#e2e700","SLIT2 Radial Glia" = "#FFDAB9", 
+                  "Transit Amplifying Cell" = "#DFFF00", "PAX3 Neuroblast" = "#7dfc00", "PAX3 Neuron" ="#90EE90", "HOXB3 Neuroblast" = "#0ec434", 
+                  "Glut Neuron" = "#228c68", "Neuron" = "#006400","SEMA3E Astrocyte" = "#FFDAB9","ROBO2 Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162",
+                  "Undetermined Astrocyte" = "#BDC3C7","Fetal COP" = "#00FFFF","RG-like OPC" =  "#89CFF0","OPC" = "#0096FF","COP" = "#A7C7E7",
+                  "Astrocyte-like OPC"= "#40E0D0", "Early OL" = "#3998f5","RBFOX1 OL" = "#8A2BE2","OPALIN OL" = "#1A3EAB",
+                  "Mesenchymal" = "#b732cc", "Fetal Microglia" = "#FFB3BA", "Microglia" = "#FF6F61", "Lymphocyte" = "darkred",
+                  "Lymphatic Endothelial" = "#D5006D", "Immune OL" = "#D8BFD8", "Endothelial" = "#000080",
+                  "Erythroblast" = "#37294f", "Pericyte" = "#6E260E")
+# dev group 
+Development = c("#0D0887", "#7E03A8", "#CC4678", "#F89441", "#F0F921")
+names(Development) = c("Fetal", "Infant", "Child",
+                "Adolescent","Adult")
+postnatal= c("Postnatal" = "#F0F921", "Fetal" =  "#0D0887")
+
+```
+
+```{r read in data}
+# read in data
+atlas <- readRDS("output/objects/atlas.RDS")
+## remove atac assays since we are only mapping gene expression
+DefaultAssay(atlas) <- "RNA"
+atlas@assays$peaksMACS2 <- NULL
+atlas@assays$ATAC <- NULL
+
+
+cancer <- readRDS("output/objects/mapping/dmg_map_to_ATLAS.rds")
+ms <- readRDS("output/objects/mapping/ms_map_to_ATLAS.rds")
+dropseq <- readRDS("output/objects/mapping/dropseq_map_to_ATLAS.rds")
+
+```
+
+
+```{r}
+# Set Cell type as factor
+atlas$Cell_Type <- factor(atlas$Cell_Type, levels = names(cellcolor))
+cancer$Cell_Type <- factor(cancer$Cell_Type, levels = names(cellcolor))
+ms$Cell_Type <- factor(ms$Cell_Type, levels = names(cellcolor))
+dropseq$Cell_Type <- factor(dropseq$Cell_Type, levels = names(cellcolor))
+
+# Create postnatal status column
+atlas@meta.data$postnatal <- ifelse(atlas$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+cancer@meta.data$postnatal <- ifelse(cancer$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+ms@meta.data$postnatal <- ifelse(ms$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+dropseq@meta.data$postnatal <- ifelse(dropseq$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+
+```
+
+
+# Tables
+
+## atlas
+```{r atlas tables}
+# cell type
+atlas_celltype <- atlas@meta.data %>% group_by(sample_id,Cell_Type) %>% summarise(n=n()) %>% pivot_wider(names_from = Cell_Type, values_from = n, values_fill = 0)
+
+dev.group <- unique(paste(atlas$sample_id,atlas$dev.group,sep=";")) %>% str_split_fixed(.,";",2)
+atlas_celltype$dev.group <- dev.group[match(dev.group[,1], atlas_celltype$sample_id),2]
+
+atlas_celltype <- atlas_celltype[,c("sample_id","dev.group", names(cellcolor))]
+
+# development group (not necessary for atlas)
+atlas_dev.group <- atlas@meta.data %>% group_by(sample_id,dev.group) %>% summarise(n=n()) %>% pivot_wider(names_from = dev.group, values_from = n, values_fill = 0)
+
+postnatal.df <- unique(paste(atlas$sample_id,atlas$postnatal,sep=";")) %>% str_split_fixed(.,";",2)
+atlas_dev.group$postnatal <- postnatal.df[match(postnatal.df[,1], atlas_dev.group$sample_id),2]
+
+atlas_dev.group <- atlas_dev.group[,c("sample_id","postnatal", names(Development))]
+
+
+```
+
+
+
+## cancer
+```{r cancer tables}
+# cell type
+cancer_celltype <- cancer@meta.data %>% group_by(sample_id,Cell_Type) %>% summarise(n=n()) %>% pivot_wider(names_from = Cell_Type, values_from = n, values_fill = 0)
+
+cancer_celltype <- cancer_celltype[,c("sample_id", names(cellcolor)[names(cellcolor) %in% unique(cancer$Cell_Type)])]
+
+# development stage
+cancer_dev.group <- cancer@meta.data %>% group_by(sample_id,dev.group) %>% summarise(n=n()) %>% pivot_wider(names_from = dev.group, values_from = n, values_fill = 0)
+
+#postnatal.df <- unique(paste(cancer$sample_id,cancer$postnatal,sep=";")) %>% str_split_fixed(.,";",2)
+
+cancer_dev.group <- cancer_dev.group[,c("sample_id", names(Development))]
+
+
+
+hist(cancer$Cell_Type.score)
+hist(cancer$dev.group.score)
+
+df1<-cancer@meta.data |> group_by(Cell_Type)  |>
+  summarise(median_prediction_score = median(Cell_Type.score, na.rm = TRUE)) 
+
+df2<-cancer@meta.data |> group_by(dev.group)  |>
+  summarise(median_prediction_score = median(dev.group.score, na.rm = TRUE)) 
+
+df.list <- list("DMG_CellType" = df1, "DMG_devgroup"= df2)
+
+write.xlsx(df.list, "output/tables/DMG_Prediction_table.xlsx")
+
+```
+
+## ms
+```{r ms tables}
+# cell type
+ms_celltype <- ms@meta.data %>% group_by(sample_id,Cell_Type) %>% summarise(n=n()) %>% pivot_wider(names_from = Cell_Type, values_from = n, values_fill = 0)
+ms_celltype[,names(cellcolor)[!(names(cellcolor) %in% colnames(ms_celltype))]] <- matrix(0, dim(ms_celltype)[1],length(names(cellcolor)[!(names(cellcolor) %in% colnames(ms_celltype))])) 
+
+
+
+ms_celltype <- ms_celltype[,c("sample_id", names(cellcolor))] %>% data.frame()
+
+# development stage
+ms_dev.group <- ms@meta.data %>% group_by(sample_id,dev.group) %>% summarise(n=n()) %>% pivot_wider(names_from = dev.group, values_from = n, values_fill = 0)
+
+ms_dev.group <- ms_dev.group[,c("sample_id", names(Development))]
+
+
+hist(ms$Cell_Type.score)
+hist(ms$dev.group.score)
+
+df1<-ms@meta.data |> group_by(Cell_Type)  |>
+  summarise(median_prediction_score = median(Cell_Type.score, na.rm = TRUE)) 
+
+df2<-ms@meta.data |> group_by(dev.group)  |>
+  summarise(median_prediction_score = median(dev.group.score, na.rm = TRUE)) 
+
+df.lists <- df.list
+
+df.list <- list("MS_CellType" = df1, "MS_devgroup"= df2)
+
+df.lists <- c(df.lists, df.list)
+
+write.xlsx(df.list, "output/tables/MS_Prediction_table.xlsx")
+
+
+
+```
+## cell culture
+```{r cell culture tables}
+# cell type
+dropseq_celltype <- dropseq@meta.data %>% group_by(sample_id,Cell_Type) %>% summarise(n=n()) %>% pivot_wider(names_from = Cell_Type, values_from = n, values_fill = 0)
+dropseq_celltype[,names(cellcolor)[!(names(cellcolor) %in% colnames(dropseq_celltype))]] <- matrix(0, dim(dropseq_celltype)[1],length(names(cellcolor)[!(names(cellcolor) %in% colnames(dropseq_celltype))])) 
+
+age <- unique(paste(dropseq$sample_id,dropseq$age,sep=";")) %>% str_split_fixed(.,";",2)
+dropseq_celltype$days_in_culture <- age[match(age[,1], dropseq_celltype$sample_id),2]
+
+dropseq_celltype <- dropseq_celltype[,c("sample_id","days_in_culture",names(cellcolor))] %>% data.frame()
+
+# development stage
+dropseq_dev.group <- dropseq@meta.data %>% group_by(sample_id,dev.group) %>% summarise(n=n()) %>% pivot_wider(names_from = dev.group, values_from = n, values_fill = 0)
+age <- unique(paste(dropseq$sample_id,dropseq$age,sep=";")) %>% str_split_fixed(.,";",2)
+dropseq_dev.group$days_in_culture <- age[match(age[,1], dropseq_dev.group$sample_id),2]
+dropseq_dev.group[,names(Development)[!(names(Development) %in% colnames(dropseq_dev.group))]] <- matrix(0, dim(dropseq_dev.group)[1],length(names(Development)[!(names(Development) %in% colnames(dropseq_dev.group))])) 
+dropseq_dev.group <- dropseq_dev.group[,c("sample_id","days_in_culture", names(Development))]
+
+
+
+
+hist(dropseq$Cell_Type.score)
+hist(dropseq$dev.group.score)
+
+df1<-dropseq@meta.data |> group_by(Cell_Type)  |>
+  summarise(median_prediction_score = median(Cell_Type.score, na.rm = TRUE)) 
+
+df2<-dropseq@meta.data |> group_by(dev.group)  |>
+  summarise(median_prediction_score = median(dev.group.score, na.rm = TRUE)) 
+
+
+df.list <- list("CellCulture_CellType" = df1, "CellCulture_devgroup"= df2)
+
+
+write.xlsx(df.list, "output/tables/CellCulture_Prediction_table.xlsx")
+
+
+
+```
+
+```{r save tables}
+# save tables
+table.list <- list("atlas_cell_type" = atlas_celltype, "atlas_dev" = atlas_dev.group, 
+                       "dropseq_cell_type" = dropseq_celltype, "dropseq_dev" = dropseq_dev.group, 
+                       "multiple_sclerosis_cell_type" = ms_celltype, "multiple_sclerosis_dev" = ms_dev.group, 
+                       "dmg_cell_type" = cancer_celltype, "dmg_dev" = cancer_dev.group)
+
+write.xlsx(table.list, file = "output/tables/celltype_development_tables.xlsx")
+
+
+```
+
+
+# Figure 7A
+
+## ATLAS
+```{r atlas celltype umaps}
+#no axis no legend
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + NoLegend() +ggtitle(NULL) +NoAxes()
+# no legend
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) +NoLegend()
+# no axis
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) +ggtitle(NULL) + NoAxes()
+
+# axis and legend
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) 
+```
+
+```{r atlas dev group umaps}
+atlas@meta.data$postnatal <- ifelse(atlas$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+
+#no axis no legend
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + NoLegend() +ggtitle(NULL) +NoAxes()
+# no legend
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) +NoLegend()
+# no axis
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) +ggtitle(NULL) + NoAxes()
+
+# axis and legend
+DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) 
+```
+
+
+## Cancer plots
+
+```{r cancer cell type umaps}
+cancer$Cell_Type <- factor(cancer$Cell_Type, levels = names(cellcolor))
+#no axis no legend
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + NoLegend() +ggtitle(NULL) +NoAxes()
+# no legend
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) +NoLegend()
+# no axis
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) +ggtitle(NULL) + NoAxes()
+
+# axis and legend
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) 
+```
+
+```{r cancer dev group umaps}
+cancer@meta.data$postnatal <- ifelse(cancer$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+
+#no axis no legend
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + NoLegend() +ggtitle(NULL) +NoAxes()
+# no legend
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) +NoLegend()
+# no axis
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) +ggtitle(NULL) + NoAxes()
+
+# axis and legend
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) 
+```
+
+## ms plots
+
+```{r ms cell type umaps}
+ms$Cell_Type <- factor(ms$Cell_Type, levels = names(cellcolor))
+#no axis no legend
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + NoLegend() +ggtitle(NULL) +NoAxes()
+# no legend
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) +NoLegend()
+# no axis
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) +ggtitle(NULL) + NoAxes()
+
+# axis and legend
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) 
+```
+
+
+```{r ms dev group umaps}
+ms@meta.data$postnatal <- ifelse(ms$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+
+#no axis no legend
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + NoLegend() +ggtitle(NULL) +NoAxes()
+
+# no legend
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) +NoLegend()
+
+# no axis
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) +ggtitle(NULL) + NoAxes()
+
+
+# axis and legend
+DimPlot(ms, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) 
+
+```
+
+## cell culture plots
+
+```{r cell culture cell type umaps}
+dropseq$Cell_Type <- factor(dropseq$Cell_Type, levels = names(cellcolor))
+#no axis no legend
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + NoLegend() +ggtitle(NULL) +NoAxes()
+
+# no legend
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) +NoLegend()
+
+# no axis
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) +ggtitle(NULL) + NoAxes()
+
+
+# axis and legend
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) 
+
+```
+
+
+```{r cell culture devgroup umaps}
+dropseq@meta.data$postnatal <- ifelse(dropseq$dev.group != "Fetal", "Postnatal", "Fetal") %>% factor()
+
+#no axis no legend
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + NoLegend() +ggtitle(NULL) +NoAxes()
+
+# no legend
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) +NoLegend()
+
+# no axis
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) +ggtitle(NULL) + NoAxes()
+
+
+# axis and legend
+DimPlot(dropseq, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "postnatal", cols = postnatal) + ggtitle(NULL) 
+```
+
+```{r atlas + cancer umap}
+grid.arrange(DimPlot(atlas, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) + NoLegend(),
+DimPlot(cancer, label = FALSE, label.size = 3,
+              repel = FALSE, group.by = "Cell_Type", cols = cellcolor) + ggtitle(NULL) + NoLegend(),nrow=1)
+```
+
+
+# Figure 7B
+
+## ATLAS
+```{r atlas barplots}
+# dev group
+atlas@meta.data %>% group_by(sample_id, postnatal) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+
+df2$dev.group <- ""
+for (s in df2$sample_id) {
+  print(s)
+  atlas@meta.data[atlas@meta.data$sample_id == s,"dev.group"][[1]] %>% as.character() %>% print()
+  df2$dev.group[df2$sample_id == s] <- atlas@meta.data[atlas@meta.data$sample_id == s,"dev.group"][[1]] %>% as.character()
+}
+
+df2$dev.group <- factor(df2$dev.group, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+df2 <- df2[order(df2$dev.group),]
+df2$sample_id <- factor(df2$sample_id, levels = unique(df2$sample_id))
+
+ggplot(df2, aes(x = sample_id , y = freq, fill = postnatal)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = postnatal) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# cell type
+atlas@meta.data %>% group_by(sample_id, Cell_Type) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+df2$dev.group <- ""
+for (s in df2$sample_id) {
+  print(s)
+  atlas@meta.data[atlas@meta.data$sample_id == s,"dev.group"][[1]] %>% as.character() %>% print()
+  df2$dev.group[df2$sample_id == s] <- atlas@meta.data[atlas@meta.data$sample_id == s,"dev.group"][[1]] %>% as.character()
+}
+
+df2$dev.group <- factor(df2$dev.group, levels = c("Fetal", "Infant", "Child", "Adolescent", "Adult"))
+
+df2$Cell_Type <- factor(df2$Cell_Type, levels = levels(atlas$Cell_Type))
+df2 <- df2[order(df2$dev.group),]
+df2$sample_id <- factor(df2$sample_id, levels = unique(df2$sample_id))
+
+
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+NoLegend()
+
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+
+```
+
+
+## Cancer
+```{r cancer barplots}
+# dev group
+cancer@meta.data %>% group_by(sample_id, postnatal) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+df2$subgroup <- ""
+for (s in df2$sample_id) {
+  df2$subgroup[df2$sample_id == s] <- cancer@meta.data[cancer@meta.data$sample_id == s,"Subgroup"][[1]] %>% as.character()
+}
+df2$subgroup <- factor(df2$subgroup, levels = c("DMG", "G34-GBM", "e-GBM", "GBM", "pHGG", "RIG"))
+df2<-df2[order(df2$subgroup),]
+df2$sample_id <- factor(df2$sample_id, levels = unique(df2[order(df2$subgroup),"sample_id"]))
+#df$Cell_Type <- factor(df$Cell_Type, levels = levels(atlas$Cell_Type))
+ggplot(df2, aes(x = sample_id , y = freq, fill = postnatal)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = postnatal) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# cell type
+cancer@meta.data %>% group_by(sample_id, Cell_Type) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+for (s in df2$sample_id) {
+  df2$subgroup[df2$sample_id == s] <- cancer@meta.data[cancer@meta.data$sample_id == s,"Subgroup"][[1]] %>% as.character()
+}
+df2$subgroup <- ""
+for (s in df2$sample_id) {
+  df2$subgroup[df2$sample_id == s] <- cancer@meta.data[cancer@meta.data$sample_id == s,"Subgroup"][[1]] %>% as.character()
+}
+df2$subgroup <- factor(df2$subgroup, levels = c("DMG", "G34-GBM", "e-GBM", "GBM", "pHGG", "RIG"))
+df2<-df2[order(df2$subgroup),]
+df2$sample_id <- factor(df2$sample_id, levels = unique(df2[order(df2$subgroup),"sample_id"]))
+
+
+df2$Cell_Type <- factor(df2$Cell_Type, levels =names(cellcolor))
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+NoLegend()
+
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+## ms
+```{r ms barplots}
+# dev group
+ms@meta.data %>% group_by(sample_id, postnatal) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df
+ggplot(df, aes(x = sample_id , y = freq, fill = postnatal)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = postnatal) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# cell type
+ms@meta.data %>% group_by(sample_id, Cell_Type) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+for (s in df2$sample_name) {
+  df2[df2$sample_name == s,"subtype"] <- ms@meta.data[ms@meta.data$sample_name == s,"Subtype"][[1]] %>% as.character()
+}
+
+df2$Cell_Type <- factor(df2$Cell_Type, levels = names(cellcolor))
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+NoLegend()
+
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Cell Culture
+```{r cellculture barplots}
+# dev group
+dropseq@meta.data %>% group_by(sample_id, postnatal) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df
+df$age <- ""
+for (s in df$sample_id) {
+  df$age[df$sample_id == s] <- dropseq@meta.data[dropseq@meta.data$sample_id == s,"age"][[1]] %>% as.character()
+}
+df$age <- factor(df$age, levels = c("Day 66", "Day 77", "day 85", "Day 89", "Day 104"))
+df<-df[order(df$age),]
+df$sample_id <- factor(df$sample_id, levels = unique(df$sample_id))
+
+ggplot(df, aes(x = sample_id , y = freq, fill = postnatal)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = postnatal) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# cell type
+dropseq@meta.data %>% group_by(sample_id, Cell_Type) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+df2$subtype <- ""
+for (s in df2$sample_name) {
+  df2[df2$sample_name == s,"subtype"] <- dropseq@meta.data[dropseq@meta.data$sample_name == s,"Subtype"][[1]] %>% as.character()
+}
+
+df2$Cell_Type <- factor(df2$Cell_Type, levels = names(cellcolor))
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+NoLegend()
+
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+## age ordered
+dropseq@meta.data %>% group_by(sample_id, Cell_Type) %>% summarise(n = n()) %>% group_by(sample_id) %>% mutate(freq = n / sum(n)) %>% data.frame -> df2
+df2$age <- ""
+for (s in df2$sample_id) {
+  df2$age[df2$sample_id == s] <- dropseq@meta.data[dropseq@meta.data$sample_id == s,"age"][[1]] %>% as.character()
+}
+df2$age <- factor(df2$age, levels = c("Day 66", "Day 77", "day 85", "Day 89", "Day 104"))
+df2<-df2[order(df2$age),]
+df2$sample_id <- factor(df2$sample_id, levels = unique(df2$sample_id))
+ggplot(df2, aes(x = sample_id, y = freq, fill = Cell_Type)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  xlab("sample") + ylab("Proportion") +
+  scale_fill_manual(values = cellcolor) +
+  theme_classic()+ scale_y_continuous(expand = c(0, 0)) +theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+NoLegend()
+
+```
+
+
+## Statistical tests
+
+```{r dmg prop}
+print(paste("Total cells in DMGs:",dim(cancer@meta.data)[1]))
+print(paste("DMG cells that mapped to fetal:", table(cancer$postnatal)["Fetal"], 
+            "(", round((table(cancer$postnatal)["Fetal"]/dim(cancer@meta.data)[1])*100, digits = 1), 
+            "% of total )"))
+
+```
+
+
+```{r dmg proptest}
+atlas.oligo.count <- table(subset(atlas, postnatal=="Postnatal")$Cell_Type)["OL"]
+atlas.total.count <- dim(subset(atlas, postnatal=="Postnatal")@meta.data)[1]
+
+dmg.oligo.count <- table(cancer$Cell_Type)["OL"]
+dmg.total.count <- dim(cancer@meta.data)[1]
+
+print(paste("Number of Oligos in DMG:", dmg.oligo.count))
+print(paste("Total cells in DMGs:",dim(cancer@meta.data)[1]))
+print(paste("Number of Oligos in Postnatal Atlas:", atlas.oligo.count))
+print(paste("Total cells in Postnatal atlas:",atlas.total.count))
+
+prop.test(x = c(dmg.oligo.count, atlas.oligo.count), c(dmg.total.count, atlas.total.count), alternative = "less", correct = F)
+```
+
+
+```{r ms prop.test}
+prop.test(c(table(ms$Subtype)[["RBFOX1 OL"]], table(ms$Subtype)[["OPALIN OL"]]), c(55606,55606), alternative = "greater")
+```
+
+```{r ms chisq}
+adult <- subset(atlas, dev.group == "Adult")
+
+chi.sq.res <- chisq.test(x = c(table(ms$Subtype)[["RBFOX1 OL"]], table(ms$Subtype)[["OPALIN OL"]]),
+           p = c(table(adult$Subtype)[["RBFOX1 OL"]]/(table(adult$Subtype)[["RBFOX1 OL"]] + table(adult$Subtype)[["OPALIN OL"]]),
+                 1-table(adult$Subtype)[["RBFOX1 OL"]]/(table(adult$Subtype)[["RBFOX1 OL"]] + table(adult$Subtype)[["OPALIN OL"]])))
+
+chi.sq.res
+
+chi.sq.res$expected
+chi.sq.res$observed
+```
+
+```{r subset postnatal}
+postnatal <- subset(atlas, dev.group != "Fetal")
+```
+
+```{r comparison between Early OL and OL}
+mat <- matrix(c(table(cancer$Cell_Type)["Early OL"],
+                table(cancer$Cell_Type)["OL"],
+                table(postnatal$Cell_Type)["Early OL"],
+                table(postnatal$Cell_Type)["OL"]
+              ),
+              nrow = 2,
+              )
+
+EarlyOLvsOL<-chisq.test(mat, correct = F)
+EarlyOLvsOL
+EarlyOLvsOL$observed
+EarlyOLvsOL$expected
+```
+
+```{r comparison between RGs and Astrocytes}
+mat <- matrix(c(table(cancer$Cell_Type)["Radial Glia"],
+                table(cancer$Cell_Type)["Astrocyte"],
+                table(postnatal$Cell_Type)["Radial Glia"],
+                table(postnatal$Cell_Type)["Astrocyte"]
+              ),
+              nrow = 2,
+              )
+RGvsAstro<-chisq.test(mat, correct = F)
+RGvsAstro
+RGvsAstro$observed
+RGvsAstro$expected
+```
+
+```{r comparison of OLvs ALL}
+mat <- matrix(c(table(cancer$Cell_Type)["OL"],
+                sum(table(cancer$Cell_Type)),
+                table(postnatal$Cell_Type)["OL"],
+                sum(table(postnatal$Cell_Type))
+              ),
+              nrow = 2,
+              )
+
+OLvsAll<-chisq.test(mat, correct = F)
+OLvsAll
+OLvsAll$observed
+OLvsAll$expected
+
+```
+
+# Extract Metadata and UMAP Coordinates for 3D plots (Figure 7C)
+
+```{r}
+# load objects
+cancer <-readRDS("output/objects/mapping/cancer_map_to_HD-BAT_dev.group.rds")
+ms<- readRDS("output/objects/mapping/ms_map_to_HD-BAT_dev.group.rds")
+dropseq <- readRDS("output/objects/mapping/dropseq_map_to_HD-BAT_dev_group.rds")
+```
+
+```{r}
+# create object list
+sobj.list <- c(cancer, ms, dropseq)
+names(sobj.list) <- c("cancer","ms","dropseq")
+```
+
+```{r}
+# save metadata and umap coordinates for each disease state
+for (i in 1:3) {
+  sobj<-sobj.list[[i]]
+  write.csv(sobj@meta.data,paste0("data/" ,names(sobj.list)[i],"_meta.csv"))
+  write.csv(sobj@reductions$ref.umap@cell.embeddings,paste0("data",names(sobj.list)[i],"_umap_coords.csv"))
+}
+```
+
+```{r}
+  write.csv(atlas@meta.data,paste0("data/" ,"atlas","_meta.csv"))
+  write.csv(atlas@reductions$umap.rna@cell.embeddings,paste0("data/","atlas","_umap_coords.csv"))
+```
+

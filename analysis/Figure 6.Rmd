@@ -1,0 +1,871 @@
+```{r setup}
+# Load packages
+library(GenomeInfoDb)
+library(Matrix)
+library(Signac)
+library(Seurat)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(magrittr)
+library(readxl)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(JASPAR2020) 
+library(TFBSTools)
+library(gridExtra)
+library(openxlsx)
+library(harmony)
+library(ggplot2)
+library(readxl)
+library(ggfortify)
+library(ggrepel)
+```
+
+```{r}
+# load data
+#######  see code/linkPeaks.R !!!
+
+
+over1k_sobj <- readRDS("output/objects/atlas_peaks_linked_ct_over1k.RDS")
+over1k_sobj@assays$peaksMACS2 <- NULL
+
+# set colors
+cellcolor <- c("Ependymal" = "#000000","Radial Glia" =  "#fcff5d", "Astrocyte" = "orange","Intermediate Proliferative Cell" = "#DFFF00","PAX6+ NEUROD1+ Neuroblast" = "#7dfc00", "Neuron" ="#0B6623", "PAX6+ HOXB3+ Neuroblast" = "#66CDAA", "Fetal Neuronal Progenitor" = "#808000", "Fetal COP" = "#00FFFF", "OPC" = "#42A5F5", "Early OL" = "#0D47A1","OL" = "#37294f", "Postnatal Glial Progenitor" = "#D2691E", "Endothelial" = "#C2A57B","Pericyte" = "#6E260E","Mesenchymal" = "#b732cc","Lymphocyte" = "#FF9AA2", "Myeloid" = "#FF1493","Erythroblast" = "#C94C4C")
+
+devcolor <- c("Fetal" =  "#0D0887", "Infant" = "#7E03A8", "Child" ="#CC4678","Adolescent" = "#F89441","Adult" = "#F0F921")
+
+
+# get links obj
+
+links<-Links(over1k_sobj)
+
+# number of non-significant links
+sum(links$pvalue >= 0.05)
+# [1] 0
+
+# number of significant links
+sum(links$pvalue < 0.05)
+# [1] 68415
+
+
+# number of peaks
+length(Features(over1k_sobj[["ATAC"]]))
+#[1] 478800
+
+# number of peaks with links
+length(unique(links$peak))
+#[1] 48511
+
+table(links$peak) %>% max()
+#[1] 29
+table(links$peak) %>% min()
+#[1] 1
+table(links$peak) %>% IQR()
+#[1] 1
+table(links$peak) %>% mean()
+#[1] 1.410299
+table(links$peak) %>% median()
+#[1] 1
+
+hist(table(links$peak))
+sum(table(links$peak) ==1)
+
+# load daps
+sheetnames<-excel_sheets("output/tables/deseq2/DAPs/allCellTypes.xlsx")
+
+
+## Get daps per cell cluster and overall
+dap.df <- read_xlsx("output/tables/deseq2/DAPs/allCellTypes.xlsx", sheet = sheetnames[1]) %>% data.frame()
+dap.df <- subset(dap.df, 
+                 log2FoldChange >= 1 &
+                   padj < 0.05
+                 )
+dap.df$cluster = sheetnames[1]
+dap.df$pct.1 <- NULL
+
+for (i in 2:length(sheetnames)) {
+  dap.df.i <- read_xlsx("output/tables/deseq2/DAPs/allCellTypes.xlsx", sheet = sheetnames[i]) %>% data.frame()
+  dap.df.i <- subset(dap.df.i, 
+                   log2FoldChange >= 1 &
+                     padj < 0.05
+  )
+  
+  if (nrow(dap.df.i) != 0) {
+    
+    if ("pct.1" %in% colnames(dap.df.i)) {
+      dap.df.i$pct.1 <- NULL
+    }
+    
+    dap.df.i$cluster = sheetnames[i]
+    
+    dap.df <- rbind(dap.df, dap.df.i)
+  }
+}
+## get number of of link peaks in daps
+length(unique(dap.df$gene))
+# [1] 312547
+sum(unique(dap.df$gene) %in% unique(links$peak))
+# [1] 42049
+
+# percent of daps that have links
+(42049/312547) * 100
+# [1] 13.43702
+
+# get daps for devgroup overall
+# load daps
+sheetnames<-excel_sheets("output/tables/deseq2/DAPs/alldevgroup.xlsx")
+
+
+## Get daps per cluster and overall
+dap.df <- read_xlsx("output/tables/deseq2/DAPs/alldevgroup.xlsx", sheet = sheetnames[1]) %>% data.frame()
+dap.df <- subset(dap.df, 
+                 log2FoldChange >= 1 &
+                   padj < 0.05
+)
+dap.df$cluster = sheetnames[1]
+dap.df$pct.1 <- NULL
+
+for (i in 2:length(sheetnames)) {
+  dap.df.i <- read_xlsx("output/tables/deseq2/DAPs/alldevgroup.xlsx", sheet = sheetnames[i]) %>% data.frame()
+  dap.df.i <- subset(dap.df.i, 
+                     log2FoldChange >= 1 &
+                       padj < 0.05
+  )
+  
+  if (nrow(dap.df.i) != 0) {
+    
+    if ("pct.1" %in% colnames(dap.df.i)) {
+      dap.df.i$pct.1 <- NULL
+    }
+    
+    dap.df.i$cluster = sheetnames[i]
+    
+    dap.df <- rbind(dap.df, dap.df.i)
+  }
+}
+
+## get number of of link peaks in daps
+length(unique(dap.df$gene))
+# [1] 240369
+sum(unique(dap.df$gene) %in% unique(links$peak))
+# [1] 35771
+
+# percent of daps that have links
+(35771/240369) * 100
+# [1] 14.8817
+
+dap_link_peak_tbl<-links$peak[links$peak %in% dap.df$gene[dap.df$cluster == "Infant"]
+                     ] %>% table()
+dap_link_peak_tbl<-dap_link_peak_tbl[order(dap_link_peak_tbl, decreasing = T)]
+
+dap_link_peak_df <- data.frame(dap_link_peak_tbl)
+colnames(dap_link_peak_df) <- c("peak","nLinks")
+rownames(dap_link_peak_df) <- dap_link_peak_df$peak
+
+dap_link_peak_df$genes <-""
+for (peak in names(dap_link_peak_tbl)) {
+  dap_link_peak_df[peak,"genes"]<-paste(links$gene[links$peak %in% peak],collapse = ",")
+}
+
+
+peak <- dap_link_peak_df$peak[1]
+CoveragePlot(over1k_sobj,region=StringToGRanges(peak),
+             features = strsplit(dap_link_peak_df[peak,"genes"],",")[[1]],
+             group.by = "dev.group", 
+             extend.upstream = 100000, 
+             extend.downstream =100000,
+             region.highlight = StringToGRanges(peak),
+             peaks = F) & 
+  scale_fill_manual(values = devcolor)
+
+CoveragePlot(over1k_sobj,
+             region=StringToGRanges(peak),
+             group.by = "dev.group",
+             annotation = F,
+             peaks = F,
+             links=F
+             ) & 
+  scale_fill_manual(values = devcolor)
+
+```
+
+```{r Figure 6a}
+
+# volcanoplot
+link.df<-data.frame(links)
+goi.up <- c("ZIC1",
+         "MYT1L",
+         "AQP4",
+         "LHX8",
+         "GPR17",
+         "GDF7")
+goi.down <- c(
+         "BCAS1",
+         "CNTN2",
+         "MOBP")
+
+peak.df <- link.df[0,]
+colnames(peak.df) <- colnames(link.df)
+for (gene in goi.up) {
+  link.df.ord<-link.df[order(link.df$score,decreasing = T), ]
+  peak.df<-rbind(peak.df,link.df.ord[link.df.ord$gene == gene,][1,])
+}
+
+for (gene in goi.down) {
+  link.df.ord<-link.df[order(link.df$score,decreasing = F), ]
+  peak.df<-rbind(peak.df,link.df.ord[link.df.ord$gene == gene,][1,])
+}
+
+
+ggplot(link.df, aes(x=score, y=-1*log10(pvalue))) + 
+  geom_point(size = 0.5) +
+  geom_vline(xintercept = 0.05, linetype=2, color="red") +
+  geom_vline(xintercept = -0.05, linetype=2, color= "red") + 
+  theme_bw() +
+  geom_label_repel(
+    data = peak.df, 
+    aes(label = gene),                     
+    box.padding = 0.6,                            
+    point.padding = 0.3,                          
+    segment.color = "black",                         
+    segment.size = 0.5                            
+  ) +
+  theme_minimal()
+```
+
+
+```{Figure 6b}
+# get "top" linked peaks and their associated genes
+peaks_ordered <-table(links$peak)[order(table(links$peak),decreasing = T)] %>% names()
+top_linked_peaks <- peaks_ordered[1:50]
+top_linked_peak_genes <-links$gene[links$peak %in% top_linked_peaks] %>% unique()
+
+gene_tbl <-table(links$gene)[order(table(links$gene),decreasing = T)]
+gene_tbl_df <-table(links$gene)[order(table(links$gene),decreasing = F)] %>% data.frame()
+gene_tbl_df$rank<- rownames(gene_tbl_df) %>% as.numeric()
+
+
+uq_gene_tbl_df <- gene_tbl_df %>%
+  distinct(Freq, .keep_all = TRUE)
+
+df <- gene_tbl_df
+# Collapse identical link counts
+curve <- df |>
+  group_by(Freq) |>
+  summarise(rank=max(rank),.groups="drop") |>
+  arrange(Freq) |>
+  mutate(
+    x=(rank-min(df$rank))/diff(range(df$rank)),
+    y=(Freq-min(Freq))/diff(range(Freq)),
+    distance=x-y)
+
+
+# Maximum-distance elbow
+cutoff_links <- curve$Freq[which.max(curve$distance)]
+cutoff_rank <- min(df$rank[df$Freq > cutoff_links])
+
+goi <- c("PAX6","HES1", "SOX9","AQP4","CD44","SLC1A2","RGMA","NFIA","FOXC1","ETS1")
+library(ggrepel)
+
+ggplot(df,aes(rank,Freq)) +
+  geom_point(size = 1.5)+
+  geom_line() +
+  geom_vline(xintercept=cutoff_rank,linetype="dashed",color="red") +
+  labs(x="Gene rank",y="Number of linked ATAC peaks") +
+  theme_bw() +
+geom_label_repel(
+  data = subset(df, df$Var1 %in% goi), # <-- Filter for points to label
+  aes(label = Var1),                     # <-- Must match geom_jitter
+  box.padding = 0.6,                             # Spaces out the labels
+  point.padding = 0.3,                           # Space between label line and point
+  segment.color = "black",                         # Color of the connecting lines
+  segment.size = 0.5                             # Thickness of the connecting lines
+) +
+  theme_minimal()
+```
+```{r}
+# Extract highly linked genes
+highly_linked <- df |> filter(Freq > cutoff_links)
+
+
+# for (i in 1:nrow(gene_tbl_df)) {
+#   gene_tbl_df$rank[i]<- which(unique(gene_tbl_df$Freq) == gene_tbl_df$Freq[i])
+# }
+# 
+# genes_ordered <-gene_tbl %>% names()
+# 
+# 
+# 
+# 
+# ggplot(data=gene_tbl_df, aes(x=rank, y=Freq)) + geom_point(position="jitter") + theme_bw()
+
+
+
+
+
+genes_ordered <-gene_tbl %>% names()
+hist(table(links$gene)[order(table(links$gene),decreasing = T)])
+boxplot(table(links$gene)[order(table(links$gene),decreasing = T)])
+
+cutoff <- quantile(table(links$gene)[order(table(links$gene),decreasing = T)], 
+                   0.95, na.rm = TRUE)
+
+top_linked_genes <- gene_tbl[gene_tbl > cutoff] %>% names()
+
+
+c("SOX2","SOX10","MYRF") %in% top_linked_genes
+
+
+
+# 
+# CoveragePlot(over1k_sobj,
+#              region="FOXC1", 
+#              group.by = "Cell_Type", 
+#              extend.upstream = 100000, 
+#              extend.downstream =100000,
+#              peaks=F,
+#              features = "FOXC1", 
+#              cells = cells_over1k
+#             ) &
+#   scale_fill_manual(values= cellcolor)
+# 
+# goi <-c( "SEZ6L",
+# "RGMA",
+# "NFIA",
+# "FOXC1",
+# "ETS1",
+# "CNTN2",
+# "AQP4",
+# "SLC1A2",
+# "SLC3A2"
+# )
+# 
+# 
+# new_lev <- levels(over1k_sobj$Cell_Type)[levels(over1k_sobj$Cell_Type) %in% 
+#                                            unique(over1k_sobj$Cell_Type)]
+# over1k_sobj$Cell_Type <- factor(over1k_sobj$Cell_Type, levels = new_lev)
+# for (gene in goi) {
+#   try( {
+#   p<-CoveragePlot(over1k_sobj,
+#                region=gene, 
+#                group.by = "Cell_Type", 
+#                extend.upstream = 100000, 
+#                extend.downstream =100000,
+#                peaks=F,
+#                links = T,
+#                features =gene
+#   ) & scale_fill_manual(values= cellcolor) 
+#   ggsave(paste0("cov/",gene,".pdf"),p, height = 7.5, width = 5.5)
+#   
+#   }
+#   
+#   )
+# }
+
+```
+
+```{r Figure 6c}
+sobj<-over1k_sobj
+# download from https://www.ebi.ac.uk/gwas/docs/file-downloads/
+gwas<-read.table(file = "data/gwas-catalog-download-associations-alt-full.tsv", 
+           sep="\t",
+           header = T,
+           fill = TRUE)
+colnames(gwas)
+
+gwas_traitmap<-read.table(file = "data/gwas_catalog_trait-mappings_r2026-10-03.tsv", 
+                 sep="\t",
+                 header = T,
+                 fill = TRUE)
+
+
+
+
+efo_terms <- list(
+
+  `Psychiatric and mood disorders` = c(
+    "psychosis",
+    "schizoaffective disorder",
+    "obsessive-compulsive disorder",
+    "mood disorder",
+    "neurotic disorder",
+    "bipolar disorder",
+    "generalized anxiety disorder",
+    "social anxiety disorder",
+    "schizophrenia",
+    "depressive disorder",
+    "major depressive disorder",
+    "adjustment disorder",
+    "dysthymic disorder",
+    "postpartum depression",
+    "cocaine dependence",
+    "cannabis dependence",
+    "obsessive-compulsive disorder",
+    "generalized anxiety disorder",
+    "social anxiety disorder",
+    "neurotic disorder"
+  ),
+
+  `Neurodevelopmental disorders` = c(
+    "developmental disability",
+    "attention deficit hyperactivity disorder",
+    "autism spectrum disorder",
+    "cerebral palsy",
+    "congenital nervous system disorder"
+  ),
+
+  `Neurodegenerative disorders` = c(
+    "amyotrophic lateral sclerosis",
+    "Alzheimer disease",
+    "neurodegenerative disease",
+    "motor neuron disease",
+    "sporadic Creutzfeld Jacob disease",
+    "sporadic amyotrophic lateral sclerosis",
+    "Parkinson disease",
+    "Huntington disease",
+    "early-onset Alzheimers disease",
+    "late-onset Alzheimers disease",
+    "Late-onset Alzheimer’s disease in APOEe4 non-carriers",
+    "anterior horn disorder"
+  ),
+
+  `Epilepsy and seizure disorders` = c(
+    "generalised epilepsy",
+    "epilepsy",
+    "epilepsy with generalized tonic-clonic seizures"
+  ),
+
+  `Movement disorders` = c(
+    "movement disorder",
+    "drug-Induced dyskinesia",
+    "Tourette syndrome",
+    "extrapyramidal and movement disease",
+    "generalized dystonia",
+    "isolated dystonia",
+    "basal ganglia disease",
+    "hereditary ataxia"
+  ),
+
+  `Cognitive and behavioral disorders` = c(
+    "dementia",
+    "conduct disorder",
+    "pathological gambling",
+    "aids dementia",
+    "cognitive disorder"
+  ),
+
+
+
+  `Brain and nervous system neoplasms` = c(
+    "brain cancer",
+    "glioma",
+    "meningeal neoplasm",
+    "brain neoplasm",
+    "nervous system benign neoplasm",
+    "benign brain neoplasm",
+    "benign brain neoplasm",
+    "glioblastoma multiforme",
+    "malignant glioma",
+    "nervous system cancer"
+  ),
+
+  `Neurological injuries and structural disorders` = c(
+    "brain injury",
+    "concussion",
+    "nervous system injury",
+    "radiation-induced brain injury"
+  ),
+
+  `Inflammatory and infectious neurological diseases` = c(
+    "meningitis",
+    "anti-NMDA receptor encephalitis",
+    "viral meningitis",
+    "acute transverse myelitis",
+    "viral encephalitis",
+    "encephalitis"
+  ),
+
+  `Sleep disorders` = c(
+    "narcolepsy",
+    "narcolepsy-cataplexy syndrome",
+    "sleep disorder",
+    "periodic limb movement disorder"
+  ),
+
+  `Other neurological disorders` = c(
+    "brain disease"
+  )
+)
+
+gwas_traitmap_trunc<-gwas_traitmap[gwas_traitmap$EFO.term %in% unlist(efo_terms),]
+
+gwas_trunc<-gwas[gwas$DISEASE.TRAIT %in% gwas_traitmap_trunc$Disease.trait,]
+
+
+gwas_trunc$EFO.term <-""
+
+for (disease in unique(gwas_trunc$DISEASE.TRAIT)) {
+  gwas_trunc$EFO.term[gwas_trunc$DISEASE.TRAIT == disease]<-gwas_traitmap_trunc$EFO.term[gwas_traitmap_trunc$Disease.trait == disease]
+}
+
+
+snp_wo_pos <- gwas_trunc$SNPS[gwas_trunc$CHR_POS==""]
+snp_wo_pos
+
+for (snp in gwas_trunc$SNPS[gwas_trunc$CHR_POS==""][88:95]) {
+  gwas_trunc$CHR_ID[gwas_trunc$SNPS==snp] <- strsplit(snp,"_")[[1]][1]
+  gwas_trunc$CHR_POS[gwas_trunc$SNPS==snp] <- strsplit(snp,"_")[[1]][2]
+}
+
+
+snp_wo_pos <- gwas_trunc$SNPS[gwas_trunc$CHR_POS==""]
+snp_wo_pos
+
+gwas_trunc <-  gwas_trunc[gwas_trunc$CHR_POS !="",]
+
+
+gwas_trunc$chrom <- paste0("chr",gwas_trunc$CHR_ID, "-",
+                           gwas_trunc$CHR_POS,"-",
+                           gwas_trunc$CHR_POS)
+gwas_trunc$chrom<- gwas_trunc$chrom %>% gsub("chrchr","chr",.)
+gwas_trunc$category <- ""
+for (trait in unique(gwas_trunc$EFO.term)) {
+  
+  gwas_trunc$category[gwas_trunc$EFO.term == trait] <- names(efo_terms)[sapply(efo_terms, function(x) trait %in% x)]
+}
+
+# load daps
+sheetnames<-excel_sheets("output/tables/deseq2/DAPs/allCellTypes.xlsx")
+
+
+## Get daps per cell cluster and overall
+dap.df <- read_xlsx("output/tables/deseq2/DAPs/allCellTypes.xlsx", sheet = sheetnames[1]) %>% data.frame()
+dap.df <- subset(dap.df, 
+                 log2FoldChange >= 1 &
+                   padj < 0.05
+)
+dap.df$cluster = sheetnames[1]
+dap.df$pct.1 <- NULL
+
+for (i in 2:length(sheetnames)) {
+  dap.df.i <- read_xlsx("output/tables/deseq2/DAPs/allCellTypes.xlsx", sheet = sheetnames[i]) %>% data.frame()
+  dap.df.i <- subset(dap.df.i, 
+                     log2FoldChange >= 1 &
+                       padj < 0.05
+  )
+  
+  if (nrow(dap.df.i) != 0) {
+    
+    if ("pct.1" %in% colnames(dap.df.i)) {
+      dap.df.i$pct.1 <- NULL
+    }
+    
+    dap.df.i$cluster = sheetnames[i]
+    
+    dap.df <- rbind(dap.df, dap.df.i)
+  }
+}
+
+
+## get number of of link peaks in daps
+length(unique(dap.df$gene))
+# [1] 312547
+library(GenomicRanges)
+dap_gr<-unique(dap.df$gene) %>% StringToGRanges()
+snp_gr<-unique(gwas_trunc$chrom) %>% StringToGRanges()
+
+hits<-findOverlaps(snp_gr,dap_gr)
+overlap_str<-dap_gr[subjectHits(hits)] %>% GRangesToString()
+names(overlap_str) <- snp_gr[queryHits(hits)] %>% GRangesToString()
+
+snp.dap.df<-dap.df[dap.df$gene %in% overlap_str,]
+
+snp.dap.df$SNP <- ""
+snp.dap.df$disease_trait <- ""
+snp.dap.df$SNP_POS <- ""
+
+for (pos in names(overlap_str)) {
+  peak <- overlap_str[pos]
+
+    snp.dap.df$SNP[snp.dap.df$gene==peak] <- gwas_trunc[gwas_trunc$chrom==pos,"SNPS"] %>% unique()
+
+    snp.dap.df$disease_trait[snp.dap.df$gene==peak] <- gwas_trunc[gwas_trunc$chrom==pos,"DISEASE.TRAIT"] %>% unique()
+
+    snp.dap.df$SNP_POS[snp.dap.df$gene==peak] <- pos
+}
+
+
+
+
+library(LOLA)
+library(GenomicRanges)
+DefaultAssay(sobj) <- "ATAC"
+all_atac_peaks <- Features(sobj)
+grange_cell_list<-lapply(unique(dap.df$cluster), function(cell){
+  StringToGRanges(dap.df$gene[dap.df$cluster == cell])
+}) 
+
+# Cell-type peak sets (GRangesList)
+celltype_peaks <- GRangesList(
+  grange_cell_list
+)
+names(celltype_peaks) <- unique(dap.df$cluster)
+
+# Background: all eligible tested ATAC peaks
+universe <- all_atac_peaks
+
+# Custom GWAS region database
+library(dplyr)
+
+# Output directories
+db_path <- "gwas_regionDB/hg38"
+collection_path <- file.path(db_path, "GWAS_traits")
+regions_path <- file.path(collection_path, "regions")
+
+dir.create(regions_path, recursive = TRUE, showWarnings = FALSE)
+
+# Prepare the GWAS regions
+library(dplyr)
+library(LOLA)
+
+# Choose a 500 bp window on each side of each SNP
+window_size <- 500
+
+# Output database location
+db_path <- "gwas_regionDB/hg38"
+collection_path <- file.path(db_path, "GWAS_traits")
+regions_path <- file.path(collection_path, "regions")
+
+dir.create(regions_path, recursive = TRUE, showWarnings = FALSE)
+
+# Prepare SNP coordinates
+library(dplyr)
+library(stringr)
+
+window_size <- 500
+
+gwas_df <- gwas_trunc %>%
+  mutate(
+    chrom = as.character(chrom),
+    disease_trait = as.character(`category`)
+  ) %>%
+  filter(
+    !is.na(chrom),
+    !is.na(disease_trait),
+    disease_trait != ""
+  ) %>%
+  extract(
+    chrom,
+    into = c("chr", "pos_start", "pos_end"),
+    regex = "^(chr[^-]+)-(\\d+)-(\\d+)$",
+    remove = FALSE
+  ) %>%
+  mutate(
+    pos_start = as.integer(pos_start),
+    pos_end = as.integer(pos_end),
+    start = pmax(1L, pos_start - window_size),
+    end = pos_end + window_size
+  ) %>%
+  filter(!is.na(pos_start), !is.na(pos_end)) %>%
+  distinct(chr, start, end, disease_trait)
+
+traits <- sort(unique(gwas_df$disease_trait))
+
+trait_files <- data.frame(
+  disease_trait = traits,
+  filename = sprintf("trait_%04d.bed", seq_along(traits))
+)
+
+# Write BED files: chromosome, 0-based start, end
+for (i in seq_len(nrow(trait_files))) {
+  
+  trait <- trait_files$disease_trait[i]
+  
+  bed_df <- gwas_df %>%
+    filter(disease_trait == trait) %>%
+    distinct(chr, start, end) %>%
+    transmute(
+      chr = chr,
+      start = start - 1L,
+      end = end
+    )
+  
+  write.table(
+    bed_df,
+    file = file.path(regions_path, trait_files$filename[i]),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+}
+
+# LOLA region-set metadata
+index_df <- data.frame(
+  filename = trait_files$filename,
+  description = trait_files$disease_trait,
+  cellType = "NA",
+  tissue = "NA",
+  dataSource = "GWAS Catalog",
+  date = as.character(Sys.Date())
+)
+
+write.table(
+  index_df,
+  file = file.path(collection_path, "index.txt"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+# LOLA collection metadata
+collection_df <- data.frame(
+  collection = "GWAS_traits",
+  description = "GWAS SNP-centered regions grouped by disease trait",
+  date = as.character(Sys.Date()),
+  source = "GWAS Catalog"
+)
+
+write.table(
+  collection_df,
+  file = file.path(collection_path, "collection.txt"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+
+
+
+
+regionDB <- loadRegionDB(
+  dbLocation = normalizePath(db_path)
+)
+
+# Inspect the loaded region sets
+head(regionDB$regionAnno)
+
+universe <- granges(sobj[["ATAC"]])
+results <- runLOLA(
+  userSets = celltype_peaks,
+  userUniverse = universe,
+  regionDB = regionDB,
+  cores = 4
+)
+
+# Inspect enriched GWAS traits
+results <- results %>%
+  arrange(qValue)
+
+head(results)
+library(dplyr)
+library(tidyr)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+# Map each LOLA result to its GWAS trait description
+res_heat <- as.data.frame(results) %>%
+  left_join(
+    as.data.frame(regionDB$regionAnno) %>%
+      dplyr::select(dbSet, description),
+    by = "dbSet",
+    suffix = c(".result", ".annotation")
+  ) %>%
+  mutate(
+    disease_trait = coalesce(description.annotation, description.result),
+    logQ = -log10(pmax(qValue, 1e-300))
+  ) %>%
+  dplyr::filter(!is.na(userSet), !is.na(disease_trait))
+
+# If a cell-type/trait pair occurs multiple times, keep the strongest
+heatmap_df <- res_heat %>%
+  group_by(userSet, disease_trait) %>%
+  summarise(
+    logQ = max(logQ, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Convert to a cell type x trait matrix
+mat <- heatmap_df %>%
+  pivot_wider(
+    names_from = disease_trait,
+    values_from = logQ
+  ) %>%
+  as.data.frame()
+
+rownames(mat) <- as.character(mat$userSet)
+mat$userSet <- NULL
+
+mat <- as.matrix(mat)
+storage.mode(mat) <- "numeric"
+
+# Select the 30 traits with the strongest enrichment across cell types
+top_n <- min(30, ncol(mat))
+
+top_traits <- names(
+  sort(apply(mat, 2, max, na.rm = TRUE), decreasing = TRUE)
+)[seq_len(top_n)]
+
+mat <- mat[, top_traits, drop = FALSE]
+
+Heatmap(
+  mat,
+  name = "-log10(q)",
+  col = colorRamp2(
+    c(0,  2),
+    c("white","#08306B")
+  ),
+  na_col = "grey90",
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  show_column_dend = F,
+  show_row_dend = F,
+  column_names_rot = 45,
+  row_names_gp = gpar(fontsize = 9),
+  column_names_gp = gpar(fontsize = 8),
+  column_title = "GWAS trait",
+  row_title = "Cell type", rect_gp = grid::gpar(col = "black", lwd = 0.5)
+)
+df<-as.data.frame(mat)
+df$Cell_Type <- rownames(df)
+writexl::write_xlsx(df,"output/tables/GWAS_trait_df.xlsx")
+```
+
+```{r Figure 6d}
+p<-CoveragePlot(over1k_sobj,
+                region="CNTN2", 
+                group.by = "Cell_Type", 
+                extend.upstream = 100000, 
+                extend.downstream =100000,
+                peaks=F,
+                links = T,
+                features =c("CNTN2","NFASC")
+) & scale_fill_manual(values= cellcolor) 
+ggsave(paste0("cov/","CNTN2","NFASC",".pdf"),p, height = 7.5, width = 7)
+
+```
+
+```{r Figure 6e}
+# astro subtype 
+
+RGL_Astrocyte_subtype_color = c("Radial Glia" = "#e2e700", "CD44 hi Astrocyte" = "#FFA500","EAAT2 hi Astrocyte" = "#FF4F00","OL-like Astrocyte" = "#C2A162","Undetermined Astrocyte" = "#4F4F4F")
+
+astros<-readRDS("output/objects/astros_linked.RDS")
+
+
+DefaultAssay(astros) <- "ATAC"
+CoveragePlot(astros,
+             region="SLC1A2", 
+             group.by = "Subtype", 
+             extend.upstream = 100000, 
+             extend.downstream =100000,
+             peaks=F,
+             features =c("SLC1A2","CD44"),
+) & scale_fill_manual(values= RGL_Astrocyte_subtype_color) 
+```
+
